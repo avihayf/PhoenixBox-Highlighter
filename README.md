@@ -6,7 +6,7 @@ When a request arrives with this header, the matching highlight color is applied
 
 ## How It Works
 
-[PhoenixBox](https://github.com/avihayf/PhoenixBox) is a Firefox extension that leverages [Firefox Multi-Account Containers](https://support.mozilla.org/en-US/kb/containers) to isolate browsing sessions. It injects an `x-mac-container-color` header into every proxied request, carrying the color of the active container.
+[PhoenixBox](https://github.com/avihayf/PhoenixBox) is a Firefox extension that injects an `x-mac-container-color` header into every proxied request, carrying the color of the active container.
 
 PhoenixBox Highlighter picks up that header in Burp and maps it to a highlight color in the proxy history — letting you instantly see which container each request came from.
 
