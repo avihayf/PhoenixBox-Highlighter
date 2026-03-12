@@ -1,13 +1,27 @@
 # PhoenixBox Highlighter
 
-A Burp Suite extension that automatically color-highlights proxy history entries based on the `x-mac-container-color` HTTP header. Requests arriving with this header get highlighted in Burp's UI, and the header is stripped before forwarding to the target server.
+A Burp Suite extension that automatically color-highlights proxy history entries based on the `x-mac-container-color` HTTP header injected by the [PhoenixBox](https://github.com/avihayf/PhoenixBox) Firefox extension.
 
-This is useful when working with Firefox Multi-Account Containers and `PhoenixBox` — each container can inject a color header through a companion browser extension, and PhoenixBox Highlighter maps that to Burp's highlight colors so you can visually distinguish traffic from different contexts at a glance.
+When a request arrives with this header, the matching highlight color is applied in Burp's proxy history and the header is stripped before the request is forwarded to the target server.
 
-## Prerequisites
+## How It Works
 
-- Install the companion Firefox extension that injects `x-mac-container-color`.
-- Use Burp Suite with Java 17+ available for builds.
+[PhoenixBox](https://github.com/avihayf/PhoenixBox) is a Firefox extension that leverages [Firefox Multi-Account Containers](https://support.mozilla.org/en-US/kb/containers) to isolate browsing sessions. It injects an `x-mac-container-color` header into every proxied request, carrying the color of the active container.
+
+PhoenixBox Highlighter picks up that header in Burp and maps it to a highlight color in the proxy history — letting you instantly see which container each request came from.
+
+```
+Firefox Container (PhoenixBox)
+        │
+        │  x-mac-container-color: red
+        ▼
+   Burp Suite Proxy
+        │
+        ├─ highlight entry red in proxy history
+        ├─ strip x-mac-container-color from request
+        ▼
+   Target Server
+```
 
 ## Supported Colors
 
@@ -22,33 +36,41 @@ This is useful when working with Firefox Multi-Account Containers and `PhoenixBo
 | `pink`       | Pink           |
 | `magenta`    | Magenta        |
 
-## Building
+Header values are case-insensitive and leading/trailing whitespace is ignored.
 
-Requires Java 17+.
+## Requirements
 
-```bash
-./gradlew clean shadowJar
-```
-
-The output JAR is at `build/libs/PhoenixBoxHighlighter.jar`.
+- [PhoenixBox](https://github.com/avihayf/PhoenixBox) Firefox extension
+- Burp Suite (Community or Pro)
+- Java 17+ (for building from source)
 
 ## Installation
 
-1. Install and configure the companion Firefox extension first.
-2. Build the JAR from source using the Gradle wrapper (see above).
+1. Install the **PhoenixBox** Firefox extension and configure your containers.
+2. Build the JAR:
+
+   ```bash
+   ./gradlew clean shadowJar
+   ```
+
+   Output: `build/libs/PhoenixBoxHighlighter.jar`
+
 3. In Burp Suite, go to **Extensions > Installed > Add**.
-4. Set **Extension type** to **Java** and select the JAR file.
+4. Set **Extension type** to **Java** and select the JAR.
 
-## How It Works
+## Building & Testing
 
-PhoenixBox Highlighter registers as both a proxy request handler and a proxy response handler:
+```bash
+# Run tests
+./gradlew test
 
-- **Requests**: Reads the `x-mac-container-color` header, applies the matching highlight color to the proxy history entry, and removes the header before the request is sent to the target.
-- **Responses**: Strips the `x-mac-container-color` header only for responses tied to requests that originally carried the marker header.
+# Build JAR
+./gradlew clean shadowJar
+```
 
 ## License
 
-Mozilla Public License 2.0. See `LICENSE`.
+Mozilla Public License 2.0. See [LICENSE](LICENSE).
 
 ## Credits
 
