@@ -40,13 +40,15 @@ Header values are case-insensitive and leading/trailing whitespace is ignored.
 
 ## Requirements
 
-- [PhoenixBox](https://github.com/avihayf/PhoenixBox) Firefox extension
+- **PhoenixBox** Firefox extension — [Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/phoenixbox/) · [GitHub](https://github.com/avihayf/PhoenixBox)
 - Burp Suite (Community or Pro)
 - Java 17+ (for building from source)
 
 ## Installation
 
-1. Install the **PhoenixBox** Firefox extension and configure your containers.
+1. Install the **PhoenixBox** Firefox extension:
+   - From the Firefox Add-ons store: [addons.mozilla.org/en-US/firefox/addon/phoenixbox](https://addons.mozilla.org/en-US/firefox/addon/phoenixbox/)
+   - Or directly from GitHub: [github.com/avihayf/PhoenixBox](https://github.com/avihayf/PhoenixBox)
 2. Download the latest `PhoenixBoxHighlighter.jar` from the [Releases](https://github.com/avihayf/PhoenixBox-Highlighter/releases) page,  
    or [build from source](#building--testing).
 3. In Burp Suite, go to **Extensions > Installed > Add**.
