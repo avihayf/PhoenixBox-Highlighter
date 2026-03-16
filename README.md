@@ -47,14 +47,8 @@ Header values are case-insensitive and leading/trailing whitespace is ignored.
 ## Installation
 
 1. Install the **PhoenixBox** Firefox extension and configure your containers.
-2. Build the JAR:
-
-   ```bash
-   ./gradlew clean shadowJar
-   ```
-
-   Output: `build/libs/PhoenixBoxHighlighter.jar`
-
+2. Download the latest `PhoenixBoxHighlighter.jar` from the [Releases](https://github.com/avihayf/PhoenixBox-Highlighter/releases) page,  
+   or [build from source](#building--testing).
 3. In Burp Suite, go to **Extensions > Installed > Add**.
 4. Set **Extension type** to **Java** and select the JAR.
 
