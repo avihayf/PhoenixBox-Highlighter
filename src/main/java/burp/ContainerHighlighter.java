@@ -19,6 +19,7 @@ import burp.api.montoya.proxy.http.ProxyResponseHandler;
 import burp.api.montoya.proxy.http.ProxyResponseReceivedAction;
 import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -51,19 +52,19 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
 
     @Override
     public ProxyRequestReceivedAction handleRequestReceived(InterceptedRequest interceptedRequest) {
-        return ProxyRequestReceivedAction.continueWith(interceptedRequest);
+        HighlightColor highlight = highlightColorFor(interceptedRequest.headers());
+
+        if (highlight == null) {
+            return ProxyRequestReceivedAction.continueWith(interceptedRequest);
+        }
+
+        Annotations annotations = interceptedRequest.annotations().withHighlightColor(highlight);
+        return ProxyRequestReceivedAction.continueWith(interceptedRequest, annotations);
     }
 
     @Override
     public ProxyRequestToBeSentAction handleRequestToBeSent(InterceptedRequest interceptedRequest) {
-        String colorValue = null;
-
-        for (HttpHeader header : interceptedRequest.headers()) {
-            if (header.name().equalsIgnoreCase(HEADER_NAME)) {
-                colorValue = header.value().trim().toLowerCase(Locale.ROOT);
-                break;
-            }
-        }
+        String colorValue = containerColorValue(interceptedRequest.headers());
 
         if (colorValue == null) {
             return ProxyRequestToBeSentAction.continueWith(interceptedRequest);
@@ -80,6 +81,23 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         HttpRequest cleanRequest = interceptedRequest.withRemovedHeader(HEADER_NAME);
 
         return ProxyRequestToBeSentAction.continueWith(cleanRequest, annotations);
+    }
+
+    private String containerColorValue(List<HttpHeader> headers) {
+        for (HttpHeader header : headers) {
+            if (header.name().equalsIgnoreCase(HEADER_NAME)) {
+                return header.value().trim().toLowerCase(Locale.ROOT);
+            }
+        }
+        return null;
+    }
+
+    private HighlightColor highlightColorFor(List<HttpHeader> headers) {
+        String colorValue = containerColorValue(headers);
+        if (colorValue == null) {
+            return null;
+        }
+        return COLOR_MAP.get(colorValue);
     }
 
     @Override

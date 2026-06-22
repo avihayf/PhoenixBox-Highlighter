@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.proxy.http.InterceptedRequest;
 import burp.api.montoya.proxy.http.InterceptedResponse;
+import burp.api.montoya.proxy.http.ProxyRequestReceivedAction;
 import burp.api.montoya.proxy.http.ProxyRequestToBeSentAction;
 import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,33 @@ import static org.mockito.Mockito.*;
 class ContainerHighlighterTest {
 
     private static final String HEADER_NAME = "x-mac-container-color";
+
+    @Test
+    void highlightsInterceptedRequestWithoutStrippingHeaderAtReceiveStage() {
+        ContainerHighlighter highlighter = new ContainerHighlighter();
+
+        HttpHeader colorHeader = mock(HttpHeader.class);
+        when(colorHeader.name()).thenReturn("X-Mac-Container-Color");
+        when(colorHeader.value()).thenReturn(" Blue ");
+
+        Annotations annotations = mock(Annotations.class);
+        Annotations blueAnnotations = mock(Annotations.class);
+        when(annotations.withHighlightColor(HighlightColor.BLUE)).thenReturn(blueAnnotations);
+
+        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
+        when(interceptedRequest.headers()).thenReturn(List.of(colorHeader));
+        when(interceptedRequest.annotations()).thenReturn(annotations);
+
+        ProxyRequestReceivedAction expectedAction = mock(ProxyRequestReceivedAction.class);
+        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
+            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(interceptedRequest, blueAnnotations))
+                                .thenReturn(expectedAction);
+
+            assertSame(expectedAction, highlighter.handleRequestReceived(interceptedRequest));
+        }
+
+        verify(interceptedRequest, never()).withRemovedHeader(HEADER_NAME);
+    }
 
     @Test
     void stripsResponseHeaderOnlyForRequestsThatContainedMarkerHeader() {
