@@ -125,6 +125,9 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     /** Ceiling on distinct unrecognised values we report, so a noisy source cannot grow this set. */
     private static final int MAX_REPORTED_UNKNOWN_COLORS = 32;
 
+    /** How much of an unrecognised value we echo to the log; the header is attacker-influenced. */
+    private static final int MAX_LOGGED_COLOR_LENGTH = 64;
+
     private final Set<String> reportedUnknownColors = ConcurrentHashMap.newKeySet();
 
     /**
@@ -480,8 +483,11 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         }
 
         if (reportedUnknownColors.add(colorValue)) {
+            String shown = colorValue.length() > MAX_LOGGED_COLOR_LENGTH
+                    ? colorValue.substring(0, MAX_LOGGED_COLOR_LENGTH) + "…"
+                    : colorValue;
             log.logToError("PhoenixBox Highlighter: no highlight for " + HEADER_NAME + " value '"
-                    + colorValue + "'. Supported values: " + SUPPORTED_VALUES);
+                    + shown + "'. Supported values: " + SUPPORTED_VALUES);
         }
     }
 }

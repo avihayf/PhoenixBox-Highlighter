@@ -409,6 +409,33 @@ class ContainerHighlighterTest {
     }
 
     @Test
+    void truncatesAnOversizedUnrecognizedColorInTheLog() {
+        // The header is attacker-influenced; a huge value must not be copied into Burp's log whole.
+        Logging logging = mock(Logging.class);
+        ContainerHighlighter highlighter = new ContainerHighlighter();
+        highlighter.initialize(apiWith(logging));
+
+        Annotations annotations = selfAnnotations();
+        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
+        HttpRequest cleanRequest = mock(HttpRequest.class);
+        stubHeaders(interceptedRequest, "x".repeat(10_000), null);
+        when(interceptedRequest.annotations()).thenReturn(annotations);
+        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
+
+        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
+            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
+                                .thenReturn(mock(ProxyRequestReceivedAction.class));
+
+            highlighter.handleRequestReceived(interceptedRequest);
+        }
+
+        ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+        verify(logging).logToError(message.capture());
+        assertTrue(message.getValue().length() < 300, "logged " + message.getValue().length() + " chars");
+        assertTrue(message.getValue().contains("xxx…"), message.getValue());
+    }
+
+    @Test
     void namesRepeaterTabsWithSequenceNumberAndContainerColor() {
         Repeater repeater = mock(Repeater.class);
         ContainerHighlighter highlighter = new ContainerHighlighter();
