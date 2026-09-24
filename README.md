@@ -2,11 +2,11 @@
 
 A Burp Suite extension that automatically color-highlights proxy history entries based on the `x-mac-container-color` HTTP header injected by the [PhoenixBox](https://github.com/avihayf/PhoenixBox) Firefox extension, and labels Repeater tabs using the companion `x-mac-container-name` header.
 
-When a request arrives with these headers, the matching highlight color is applied, the container is recorded as a note, and both headers are stripped — all at the moment the Proxy receives the request, so the headers never appear in HTTP history, in the Intercept editor, or on the wire to the target.
+When a request arrives with these headers, the matching highlight color is applied, the container is recorded as a note, and both headers are stripped — all at the moment the Proxy receives the request, so they never appear in the Intercept editor or on the wire to the target. (HTTP history keeps the browser's original request alongside the edited one; see [Notes Column](#notes-column).)
 
 ## How It Works
 
-[PhoenixBox](https://github.com/avihayf/PhoenixBox) is a Firefox extension for multi-container colored browsing. One of its features, **Paint the Burp**, adds an `x-mac-container-color` header to proxied requests so Burp can visually associate each request with its source container.
+[PhoenixBox](https://github.com/avihayf/PhoenixBox) is a Firefox extension for multi-container colored browsing. Its **Highlighter** toggle adds an `x-mac-container-color` header to requests it sends through an HTTP proxy so Burp can visually associate each request with its source container.
 
 PhoenixBox Highlighter reads that header and maps it to a highlight color in the proxy history — letting you instantly tell which container each request came from.
 
@@ -79,8 +79,8 @@ PhoenixBox sends two headers, and both are only ever meant to travel from Firefo
 
 Both are removed at two independent points:
 
-1. The Proxy handler strips them **when the request is received** — before it is written to HTTP
-   history, shown in the Intercept editor, or sent. The container is preserved as a note instead, so
+1. The Proxy handler strips them **when the request is received** — before it is shown in the
+   Intercept editor or sent. HTTP history also keeps the original, unedited request. The container is preserved as a note instead, so
    nothing is lost.
 2. An HTTP handler strips them from **every** Burp tool, so requests captured into Repeater or
    Intruder before this extension was loaded cannot leak them when you resend them.
@@ -88,10 +88,14 @@ Both are removed at two independent points:
 Stripping happens even when the color is not one we recognize, and even when the name header
 arrives without a color header alongside it.
 
-> [!NOTE]
-> If Burp is configured to pass a host through without interception (e.g. a TLS pass-through rule),
-> the extension never sees the request and cannot strip the headers. Enable the PhoenixBox header
-> option only for hosts that are actually proxied.
+PhoenixBox (3.1.0+) only adds the headers to requests Firefox sends through an HTTP proxy, so a
+request that goes direct — proxy off, or a container outside the promoted list — never carries them.
+
+> [!WARNING]
+> A host on Burp's **TLS pass-through** list is still sent through the proxy, but Burp forwards its
+> encrypted traffic untouched, so this extension never sees those requests and cannot strip the
+> headers. Turn the PhoenixBox Highlighter off while testing such hosts, or take them off the
+> pass-through list.
 
 ## Sending to Repeater
 
@@ -128,10 +132,13 @@ before they become a tab label.
 1. Install the **PhoenixBox** Firefox extension:
    - From the Firefox Add-ons store: [addons.mozilla.org/en-US/firefox/addon/phoenixbox](https://addons.mozilla.org/en-US/firefox/addon/phoenixbox/)
    - Or directly from GitHub: [github.com/avihayf/PhoenixBox](https://github.com/avihayf/PhoenixBox)
-2. Download the latest `PhoenixBoxHighlighter.jar` from the [Releases](https://github.com/avihayf/PhoenixBox-Highlighter/releases) page,  
+2. Download the latest `PhoenixBoxHighlighter-<version>.jar` from the [Releases](https://github.com/avihayf/PhoenixBox-Highlighter/releases) page,  
    or [build from source](#building--testing).
 3. In Burp Suite, go to **Extensions > Installed > Add**.
 4. Set **Extension type** to **Java** and select the JAR.
+5. Check the version: the Extensions list shows **PhoenixBox Highlighter v1.2.0** (also printed in
+   the extension's **Output** tab). PhoenixBox only sends container names after you confirm that
+   v1.2.0 or later is loaded, because older versions do not strip the name header.
 
 ## Building & Testing
 
@@ -139,7 +146,7 @@ before they become a tab label.
 # Run tests
 ./gradlew test
 
-# Build JAR
+# Build JAR (build/libs/PhoenixBoxHighlighter-<version>.jar)
 ./gradlew clean jar
 ```
 
