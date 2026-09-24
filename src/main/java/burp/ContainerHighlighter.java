@@ -27,6 +27,8 @@ import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
 
 import javax.swing.JMenuItem;
 import java.awt.Component;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -34,6 +36,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,6 +54,12 @@ import static java.util.Collections.emptyList;
  * browser traffic, and the HTTP handler strips it from every tool as a backstop.
  */
 public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler, HttpHandler, ContextMenuItemsProvider {
+
+    /**
+     * The release version, stamped in by the build. PhoenixBox withholds the container-name header
+     * until the user confirms a new enough JAR, so the version is shown where they can check it.
+     */
+    static final String VERSION = readVersion();
 
     private static final String HEADER_NAME = "x-mac-container-color";
     private static final String NAME_HEADER_NAME = "x-mac-container-name";
@@ -133,12 +142,32 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         this.logging = api.logging();
         this.repeater = api.repeater();
 
-        api.extension().setName("PhoenixBox Highlighter");
+        String title = "PhoenixBox Highlighter v" + VERSION;
+        api.extension().setName(title);
         api.proxy().registerRequestHandler(this);
         api.http().registerHttpHandler(this);
         api.userInterface().registerContextMenuItemsProvider(this);
 
-        api.logging().logToOutput("PhoenixBox Highlighter loaded");
+        api.logging().logToOutput(title + " loaded");
+    }
+
+    private static String readVersion() {
+        try (InputStream in = ContainerHighlighter.class.getResourceAsStream("/phoenixbox-highlighter.properties")) {
+            if (in != null) {
+                Properties properties = new Properties();
+                properties.load(in);
+                String version = properties.getProperty("version", "").trim();
+
+                // An unexpanded placeholder means the resource was not processed by the build.
+                if (!version.isEmpty() && !version.startsWith("$")) {
+                    return version;
+                }
+            }
+        } catch (IOException ignored) {
+            // Fall through: an unknown version must never stop the extension loading.
+        }
+
+        return "unknown";
     }
 
     /**

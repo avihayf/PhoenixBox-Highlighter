@@ -2,6 +2,10 @@ plugins {
     id 'java'
 }
 
+// The single source of the release version: stamped into the JAR name and manifest, and shown in
+// Burp, where PhoenixBox users confirm which version they have loaded.
+version = '1.2.0'
+
 repositories {
     mavenCentral()
 }
@@ -19,10 +23,24 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+// Compile against the Java 17 class library, not just its bytecode level, so a newer build JDK
+// cannot let an API that Burp's runtime may lack slip through.
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+tasks.processResources {
+    inputs.property 'version', project.version
+    filesMatching('phoenixbox-highlighter.properties') {
+        expand(version: project.version)
+    }
+}
+
 tasks.jar {
     archiveBaseName = 'PhoenixBoxHighlighter'
     manifest {
         attributes 'Implementation-Title': 'PhoenixBox Highlighter',
+                   'Implementation-Version': project.version,
                    'Implementation-Vendor': '0xR3DB0MB'
     }
 }

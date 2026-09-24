@@ -369,6 +369,20 @@ class ContainerHighlighterTest {
     }
 
     @Test
+    void showsItsReleaseVersionInBurp() {
+        // PhoenixBox asks the user to confirm the JAR version before sending container names,
+        // so the version has to be visible in Burp itself: in the Extensions list and the output.
+        Logging logging = mock(Logging.class);
+        MontoyaApi api = apiWith(logging);
+        new ContainerHighlighter().initialize(api);
+
+        String version = ContainerHighlighter.VERSION;
+        assertTrue(version.matches("\\d+\\.\\d+\\.\\d+"), "version comes from the build, got: " + version);
+        verify(api.extension()).setName("PhoenixBox Highlighter v" + version);
+        verify(logging).logToOutput("PhoenixBox Highlighter v" + version + " loaded");
+    }
+
+    @Test
     void reportsEachUnrecognizedColorValueOnlyOnce() {
         Logging logging = mock(Logging.class);
         ContainerHighlighter highlighter = new ContainerHighlighter();
