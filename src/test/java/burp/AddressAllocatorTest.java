@@ -94,6 +94,20 @@ class AddressAllocatorTest {
     }
 
     @Test
+    void givesUpAtOnceWhenThePresetIpIsNotOnBurpsMachine() {
+        probe.foreignHosts.add("192.168.10.2");
+        AddressAllocator remote = new AddressAllocator(at("192.168.10.2:8080"), at("192.168.10.2:8079"),
+                ListenerConfig.parse(export()), Set.of(), probe);
+
+        AddressAllocator.Assignment assignment = remote.allocate(List.of(container("a")), Map.of()).get("a");
+
+        assertNull(assignment.address());
+        assertTrue(assignment.error().contains("not an address"), assignment.error());
+        // Each probe of a foreign IP can wait out a connect timeout, so only one is made.
+        assertEquals(1, probe.probed.size());
+    }
+
+    @Test
     void keepsCurrentHoldersFirstSoANewMarkCannotDisplaceThem() {
         Map<String, ListenerAddress> current = Map.of("z", at("127.0.0.1:18080"));
 

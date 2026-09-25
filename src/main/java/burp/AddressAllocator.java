@@ -123,8 +123,20 @@ final class AddressAllocator {
 
         for (int port = AUTO_START; port < AUTO_START + AUTO_SPAN && port <= 65535; port++) {
             ListenerAddress candidate = preset.withPort(port);
-            if (usable(candidate, taken)) {
+            if (!clearOfKnownListeners(candidate, taken)) {
+                continue;
+            }
+            if (owned.contains(candidate)) {
                 return Assignment.ok(candidate);
+            }
+
+            AddressProbe.Result result = probe.probe(candidate);
+            if (result == AddressProbe.Result.FREE) {
+                return Assignment.ok(candidate);
+            }
+            // Every port on a foreign IP fails the same way; stop instead of probing a thousand.
+            if (result == AddressProbe.Result.NOT_LOCAL) {
+                return Assignment.failed(notLocal(candidate));
             }
         }
 
@@ -145,11 +157,19 @@ final class AddressAllocator {
     }
 
     private boolean usable(ListenerAddress candidate, Set<ListenerAddress> taken) {
+        return clearOfKnownListeners(candidate, taken) && problemWith(candidate) == null;
+    }
+
+    /** Everything short of probing the machine. */
+    private boolean clearOfKnownListeners(ListenerAddress candidate, Set<ListenerAddress> taken) {
         return !candidate.equals(preset)
                 && !candidate.equals(control)
                 && !taken.contains(candidate)
-                && userListeners.stream().noneMatch(entry -> entry.overlaps(candidate))
-                && problemWith(candidate) == null;
+                && userListeners.stream().noneMatch(entry -> entry.overlaps(candidate));
+    }
+
+    private static String notLocal(ListenerAddress address) {
+        return address.host() + " is not an address of the machine Burp runs on";
     }
 
     /** {@code null} when a listener can be opened there, otherwise why not. */
@@ -162,7 +182,7 @@ final class AddressAllocator {
             case FREE:
                 return null;
             case NOT_LOCAL:
-                return address.host() + " is not an address of the machine Burp runs on";
+                return notLocal(address);
             default:
                 return address + " is in use by another program";
         }
