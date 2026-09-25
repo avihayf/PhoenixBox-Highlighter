@@ -40,18 +40,25 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import static java.util.Collections.emptyList;
 
 /**
- * Colors proxy traffic according to the {@code x-mac-container-color} header injected by the
- * PhoenixBox Firefox extension.
+ * Colors proxy traffic by the PhoenixBox container it came from.
  *
- * <p>The header exists purely to drive highlighting inside Burp and must never reach the target,
- * so it is removed on the way out at two independent points: the Proxy handler strips it from
- * browser traffic, and the HTTP handler strips it from every tool as a backstop.
+ * <p>PhoenixBox marks containers for highlighting, and this extension opens one proxy listener per
+ * marked container (see {@link SyncService}). A request's container is then known from the
+ * listener it arrived on, so nothing is ever added to the request itself.
+ *
+ * <p>Older PhoenixBox versions instead sent {@code x-mac-container-color} and
+ * {@code x-mac-container-name} headers. Those are still honoured and, above all, still stripped at
+ * two independent points so they can never reach the target: the Proxy handler strips them from
+ * browser traffic, and the HTTP handler strips them from every tool as a backstop.
  */
 public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler, HttpHandler, ContextMenuItemsProvider {
 
@@ -140,6 +147,36 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     private volatile Logging logging;
     private volatile Repeater repeater;
 
+    /** False only in tests of the header path, which must not open sockets or touch Burp's settings. */
+    private final boolean connectToPhoenixBox;
+
+    public ContainerHighlighter() {
+        this(true);
+    }
+
+    ContainerHighlighter(boolean connectToPhoenixBox) {
+        this.connectToPhoenixBox = connectToPhoenixBox;
+    }
+
+    ContainerRegistry registry() {
+        return registry;
+    }
+
+    KnownNames knownNames() {
+        return knownNames;
+    }
+
+    /** Which container each of our listeners belongs to. Empty until PhoenixBox first syncs. */
+    private final ContainerRegistry registry = new ContainerRegistry();
+
+    /** Replaced with the project-backed set once Burp hands us persistence. */
+    private volatile KnownNames knownNames = new KnownNames(null);
+
+    private volatile ListenerManager listenerManager;
+    private volatile ControlServer controlServer;
+    private volatile ScheduledExecutorService leaseTimer;
+    private volatile HighlighterTab tab;
+
     @Override
     public void initialize(MontoyaApi api) {
         this.logging = api.logging();
@@ -150,8 +187,131 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         api.proxy().registerRequestHandler(this);
         api.http().registerHttpHandler(this);
         api.userInterface().registerContextMenuItemsProvider(this);
+        api.extension().registerUnloadingHandler(this::shutdown);
+
+        try {
+            if (connectToPhoenixBox) {
+                startListenerService(api);
+            }
+        } catch (RuntimeException e) {
+            // Highlighting by listener is unavailable, but header stripping must keep working.
+            api.logging().logToError(title + ": could not start the PhoenixBox connection: " + e);
+        }
 
         api.logging().logToOutput(title + " loaded");
+    }
+
+    private static final String TOKEN_KEY = "pairingToken";
+    private static final String CONTROL_PORT_KEY = "controlPort";
+
+    private volatile String controlHost = ListenerAddress.LOOPBACK;
+    private volatile int controlPort = -1;
+
+    private void startListenerService(MontoyaApi api) {
+        ListenerManager.Store projectStore = new ListenerManager.Store() {
+            @Override
+            public String get(String key) {
+                return api.persistence().extensionData().getString(key);
+            }
+
+            @Override
+            public void set(String key, String value) {
+                api.persistence().extensionData().setString(key, value);
+            }
+        };
+        ListenerManager.ProjectOptions options = new ListenerManager.ProjectOptions() {
+            @Override
+            public String exportListeners() {
+                return api.burpSuite().exportProjectOptionsAsJson(ListenerConfig.PATH);
+            }
+
+            @Override
+            public void importListeners(String json) {
+                api.burpSuite().importProjectOptionsFromJson(json);
+            }
+        };
+
+        knownNames = new KnownNames(projectStore);
+        ListenerManager manager = new ListenerManager(options, projectStore);
+        manager.removeLeftovers();
+        listenerManager = manager;
+
+        if (api.persistence().preferences().getString(TOKEN_KEY) == null) {
+            api.persistence().preferences().setString(TOKEN_KEY, Pairing.newToken());
+        }
+        Integer storedPort = api.persistence().preferences().getInteger(CONTROL_PORT_KEY);
+
+        controlHost = Pairing.bindHost(manager.userListeners());
+        SyncService sync = new SyncService(manager, registry, knownNames, new AddressProbe.Sockets(),
+                new ListenerAddress(controlHost, storedPort == null ? ControlServer.DEFAULT_PORT : storedPort),
+                System::currentTimeMillis);
+
+        ControlServer server = new ControlServer(
+                new ControlServer.Handler(() -> api.persistence().preferences().getString(TOKEN_KEY), sync),
+                api.logging()::logToError);
+        try {
+            controlPort = server.start(controlHost, storedPort == null ? ControlServer.DEFAULT_PORT : storedPort);
+            api.persistence().preferences().setInteger(CONTROL_PORT_KEY, controlPort);
+            controlServer = server;
+        } catch (IOException e) {
+            api.logging().logToError("PhoenixBox Highlighter: no free control port between "
+                    + ControlServer.DEFAULT_PORT + " and " + ControlServer.LAST_PORT + " on " + controlHost + ": " + e);
+        }
+
+        ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "phoenixbox-lease");
+            thread.setDaemon(true);
+            return thread;
+        });
+        timer.scheduleWithFixedDelay(() -> {
+            try {
+                sync.expireIfIdle();
+            } catch (RuntimeException e) {
+                api.logging().logToError("PhoenixBox Highlighter: closing idle listeners failed: " + e);
+            }
+        }, 10, 10, TimeUnit.SECONDS);
+        leaseTimer = timer;
+
+        HighlighterTab panel = new HighlighterTab(
+                () -> controlPort < 0
+                        ? "(control server not running)"
+                        : Pairing.pairingString(controlHost, controlPort,
+                                api.persistence().preferences().getString(TOKEN_KEY)),
+                () -> controlPort < 0 ? "control server not running" : "listening for PhoenixBox on "
+                        + (controlHost.contains(":") ? "[" + controlHost + "]" : controlHost) + ":" + controlPort,
+                () -> api.persistence().preferences().setString(TOKEN_KEY, Pairing.newToken()),
+                sync);
+        api.userInterface().applyThemeToComponent(panel);
+        api.userInterface().registerSuiteTab("PhoenixBox", panel);
+        tab = panel;
+    }
+
+    /** Closes our listeners before anything else, so an unload never leaves them behind. */
+    private void shutdown() {
+        ScheduledExecutorService timer = leaseTimer;
+        if (timer != null) {
+            timer.shutdownNow();
+        }
+        HighlighterTab panel = tab;
+        if (panel != null) {
+            panel.stop();
+        }
+        ListenerManager manager = listenerManager;
+        if (manager != null) {
+            try {
+                manager.removeAll();
+            } catch (RuntimeException e) {
+                Logging log = logging;
+                if (log != null) {
+                    log.logToError("PhoenixBox Highlighter: could not remove container listeners: " + e);
+                }
+            }
+        }
+        registry.clear();
+        ControlServer server = controlServer;
+        if (server != null) {
+            server.stop();
+        }
     }
 
     private static String readVersion() {
@@ -215,7 +375,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     }
 
     /** The PhoenixBox requests a context-menu invocation applies to. */
-    private static List<HttpRequestResponse> taggedRequestResponses(
+    private List<HttpRequestResponse> taggedRequestResponses(
             MessageEditorHttpRequestResponse editor, List<HttpRequestResponse> selected) {
         // Prefer whatever is open in an editor, but fall back to the table selection rather than
         // giving up: an editor can be focused while carrying no annotations of its own, and
@@ -231,7 +391,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         return selected == null ? new ArrayList<>() : tagged(selected);
     }
 
-    private static List<HttpRequestResponse> tagged(List<HttpRequestResponse> candidates) {
+    private List<HttpRequestResponse> tagged(List<HttpRequestResponse> candidates) {
         List<HttpRequestResponse> requestResponses = new ArrayList<>(candidates);
         requestResponses.removeIf(requestResponse -> containerLabel(requestResponse) == null);
         return requestResponses;
@@ -244,7 +404,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
      * the headers are stripped, then falls back to the headers for a request captured before
      * stripping (e.g. one held in the Intercept editor of an older session).
      */
-    private static String containerLabel(HttpRequestResponse requestResponse) {
+    private String containerLabel(HttpRequestResponse requestResponse) {
         if (requestResponse == null) {
             return null;
         }
@@ -264,10 +424,16 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
 
     /**
      * The container label carried by one of our notes, or {@code null} for a note we did not write.
+     * Notes written for listener traffic are the bare container name; older, header-driven ones
+     * start with a colour marker.
      */
-    private static String labelFromNote(String note) {
+    private String labelFromNote(String note) {
         if (note == null) {
             return null;
+        }
+
+        if (knownNames.contains(note.trim())) {
+            return note.trim();
         }
 
         for (String marker : ALL_MARKERS) {
@@ -306,11 +472,21 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     @Override
     public ProxyRequestReceivedAction handleRequestReceived(InterceptedRequest interceptedRequest) {
         // Everything happens here, at the first stage the Proxy sees, because Burp's HTTP history
-        // shows the *received* request. Colour it, record the container as a note so the attribution
-        // survives, then strip both headers — so they never appear in history, in the Intercept
-        // editor, or on the wire.
+        // shows the *received* request.
+        ContainerRegistry.Container container = registry.lookup(interceptedRequest.listenerInterface());
         HttpRequest cleanRequest = withManagedHeadersRemoved(interceptedRequest);
 
+        if (container != null) {
+            // Arrived on a container's listener: colour it and name it. The request is forwarded
+            // exactly as the browser sent it, apart from dropping any stray legacy header.
+            Annotations annotations = annotateForListener(container, interceptedRequest.annotations());
+            return ProxyRequestReceivedAction.continueWith(
+                    cleanRequest == null ? interceptedRequest : cleanRequest, annotations);
+        }
+
+        // Legacy: an older PhoenixBox labels requests with headers. Colour it, record the container
+        // as a note so the attribution survives, then strip both headers — so they never appear in
+        // history, in the Intercept editor, or on the wire.
         if (cleanRequest == null) {
             return ProxyRequestReceivedAction.continueWith(interceptedRequest);
         }
@@ -358,6 +534,19 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
             annotations = annotations.withNotes(markerFor(colorValue) + " " + label);
         }
 
+        return annotations;
+    }
+
+    /** The note is the bare container name; the highlight alone carries the colour. */
+    private static Annotations annotateForListener(ContainerRegistry.Container container, Annotations annotations) {
+        HighlightColor highlight = container.color() == null ? null : COLOR_MAP.get(container.color());
+        if (highlight != null) {
+            annotations = annotations.withHighlightColor(highlight);
+        }
+        // Never clobber a note the user already wrote.
+        if (!annotations.hasNotes()) {
+            annotations = annotations.withNotes(container.name());
+        }
         return annotations;
     }
 

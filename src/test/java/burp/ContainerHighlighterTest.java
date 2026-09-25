@@ -67,7 +67,7 @@ class ContainerHighlighterTest {
 
     @Test
     void colorsStripsAndNotesAtReceiveStage() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
         InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
@@ -97,7 +97,7 @@ class ContainerHighlighterTest {
     // The headers arrive canonically cased, but we match on a lower-case constant.
     @Test
     void matchesHeaderNamesRegardlessOfCasing() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
         InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
@@ -120,7 +120,7 @@ class ContainerHighlighterTest {
 
     @Test
     void notesTheColourWhenNoNameHeaderIsPresent() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
         InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
@@ -141,7 +141,7 @@ class ContainerHighlighterTest {
 
     @Test
     void doesNotClobberANoteTheUserAlreadyWrote() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
         when(annotations.hasNotes()).thenReturn(true);
@@ -164,7 +164,7 @@ class ContainerHighlighterTest {
 
     @Test
     void stripsAtReceiveEvenWhenColorIsUnrecognized() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
         InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
@@ -197,7 +197,7 @@ class ContainerHighlighterTest {
         List<String> markersSeen = new ArrayList<>();
 
         for (String color : colors) {
-            ContainerHighlighter highlighter = new ContainerHighlighter();
+            ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
             Annotations annotations = selfAnnotations();
             InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
@@ -227,7 +227,7 @@ class ContainerHighlighterTest {
 
     @Test
     void leavesUntaggedRequestsCompletelyAloneAtReceiveStage() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
 
@@ -245,7 +245,7 @@ class ContainerHighlighterTest {
 
     @Test
     void stripsHeaderFromNonProxyToolsAsWell() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
         HttpRequest cleanRequest = mock(HttpRequest.class);
@@ -262,7 +262,7 @@ class ContainerHighlighterTest {
 
     @Test
     void doesNotRewriteToolTrafficThatHasNoContainerHeader() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
 
@@ -278,7 +278,7 @@ class ContainerHighlighterTest {
 
     @Test
     void stripsBothHeadersBeforeTheRequestIsSent() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
 
@@ -304,7 +304,7 @@ class ContainerHighlighterTest {
 
     @Test
     void stripsTheNameHeaderEvenWhenTheColourHeaderIsAbsent() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
 
@@ -331,7 +331,7 @@ class ContainerHighlighterTest {
      */
     @Test
     void stripsBothHeadersWhenRepeaterSendsATabThatStillCarriesThem() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
         HttpRequest withoutColor = mock(HttpRequest.class);
@@ -353,7 +353,7 @@ class ContainerHighlighterTest {
 
     @Test
     void stripsTheNameHeaderFromNonProxyToolsAsWell() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
         HttpRequest cleanRequest = mock(HttpRequest.class);
@@ -374,7 +374,7 @@ class ContainerHighlighterTest {
         // so the version has to be visible in Burp itself: in the Extensions list and the output.
         Logging logging = mock(Logging.class);
         MontoyaApi api = apiWith(logging);
-        new ContainerHighlighter().initialize(api);
+        new ContainerHighlighter(false).initialize(api);
 
         String version = ContainerHighlighter.VERSION;
         assertTrue(version.matches("\\d+\\.\\d+\\.\\d+"), "version comes from the build, got: " + version);
@@ -385,7 +385,7 @@ class ContainerHighlighterTest {
     @Test
     void reportsEachUnrecognizedColorValueOnlyOnce() {
         Logging logging = mock(Logging.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(logging));
 
         Annotations annotations = selfAnnotations();
@@ -412,7 +412,7 @@ class ContainerHighlighterTest {
     void truncatesAnOversizedUnrecognizedColorInTheLog() {
         // The header is attacker-influenced; a huge value must not be copied into Burp's log whole.
         Logging logging = mock(Logging.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(logging));
 
         Annotations annotations = selfAnnotations();
@@ -438,7 +438,7 @@ class ContainerHighlighterTest {
     @Test
     void namesRepeaterTabsWithSequenceNumberAndContainerColor() {
         Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
         HttpRequest cleanRed = mock(HttpRequest.class);
@@ -454,7 +454,7 @@ class ContainerHighlighterTest {
     @Test
     void sendsTheStrippedRequestToRepeaterSoTheEditorMatchesTheWire() {
         Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
         HttpRequest cleanRequest = mock(HttpRequest.class);
@@ -473,7 +473,7 @@ class ContainerHighlighterTest {
             String headerValue = vector[1];
 
             Repeater repeater = mock(Repeater.class);
-            ContainerHighlighter highlighter = new ContainerHighlighter();
+            ContainerHighlighter highlighter = new ContainerHighlighter(false);
             highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
             HttpRequest cleanRequest = mock(HttpRequest.class);
@@ -487,7 +487,7 @@ class ContainerHighlighterTest {
     @Test
     void fallsBackToTheColourWhenTheNameCannotBeDecoded() {
         Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
         HttpRequest cleanRequest = mock(HttpRequest.class);
@@ -501,7 +501,7 @@ class ContainerHighlighterTest {
     @Test
     void keepsControlCharactersOutOfRepeaterTabNames() {
         Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
         HttpRequest cleanRequest = mock(HttpRequest.class);
@@ -514,7 +514,7 @@ class ContainerHighlighterTest {
     @Test
     void namesRepeaterTabsFromTheStoredNoteWhenHeadersAreAlreadyGone() {
         Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
         // A request as it looks in HTTP history: both headers stripped, but our note survives.
@@ -532,7 +532,7 @@ class ContainerHighlighterTest {
     @Test
     void fallsBackToTheTableSelectionWhenTheFocusedEditorIsNotTagged() {
         Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), repeater));
 
         HttpRequestResponse untagged = mock(HttpRequestResponse.class);
@@ -555,7 +555,7 @@ class ContainerHighlighterTest {
 
     @Test
     void ignoresNotesThatAreNotOurs() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
 
         HttpRequest request = mock(HttpRequest.class);
@@ -567,12 +567,110 @@ class ContainerHighlighterTest {
 
     @Test
     void offersNoMenuItemForRequestsWithoutTheContainerHeader() {
-        ContainerHighlighter highlighter = new ContainerHighlighter();
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
 
         HttpRequest request = mock(HttpRequest.class);
 
         assertTrue(highlighter.provideMenuItems(contextMenuEventFor(request)).isEmpty());
+    }
+
+    @Test
+    void highlightsAndNamesTrafficFromAContainerListenerWithoutChangingIt() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.registry().replace(
+                java.util.Map.of(ListenerAddress.parse("127.0.0.1:18080"),
+                        new ContainerRegistry.Container("firefox-container-1", "Work", "red")),
+                java.util.Map.of());
+
+        Annotations annotations = selfAnnotations();
+        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
+        when(interceptedRequest.listenerInterface()).thenReturn("127.0.0.1:18080");
+        HttpHeader host = header("Host", "example.com");
+        when(interceptedRequest.headers()).thenReturn(List.of(host));
+        when(interceptedRequest.annotations()).thenReturn(annotations);
+
+        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
+            ProxyRequestReceivedAction action = mock(ProxyRequestReceivedAction.class);
+            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(interceptedRequest, annotations))
+                                .thenReturn(action);
+
+            assertSame(action, highlighter.handleRequestReceived(interceptedRequest));
+        }
+
+        verify(annotations).withHighlightColor(HighlightColor.RED);
+        // The note is the bare name: the highlight already shows the colour.
+        verify(annotations).withNotes("Work");
+        verify(interceptedRequest, never()).withRemovedHeader(anyString());
+    }
+
+    @Test
+    void leavesTrafficOnTheUsersOwnListenerAlone() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.registry().replace(
+                java.util.Map.of(ListenerAddress.parse("127.0.0.1:18080"),
+                        new ContainerRegistry.Container("firefox-container-1", "Work", "red")),
+                java.util.Map.of());
+
+        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
+        when(interceptedRequest.listenerInterface()).thenReturn("127.0.0.1:8080");
+        HttpHeader host = header("Host", "example.com");
+        when(interceptedRequest.headers()).thenReturn(List.of(host));
+
+        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(interceptedRequest);
+            receivedActionStatic.verify(() -> ProxyRequestReceivedAction.continueWith(interceptedRequest));
+        }
+        verify(interceptedRequest, never()).annotations();
+    }
+
+    @Test
+    void keepsTheUsersNoteOnContainerListenerTraffic() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.registry().replace(
+                java.util.Map.of(ListenerAddress.parse("127.0.0.1:18080"),
+                        new ContainerRegistry.Container("firefox-container-1", "Work", "blue")),
+                java.util.Map.of());
+
+        Annotations annotations = selfAnnotations();
+        when(annotations.hasNotes()).thenReturn(true);
+        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
+        when(interceptedRequest.listenerInterface()).thenReturn("127.0.0.1:18080");
+        when(interceptedRequest.headers()).thenReturn(List.of());
+        when(interceptedRequest.annotations()).thenReturn(annotations);
+
+        try (MockedStatic<ProxyRequestReceivedAction> ignored = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(interceptedRequest);
+        }
+
+        verify(annotations).withHighlightColor(HighlightColor.BLUE);
+        verify(annotations, never()).withNotes(anyString());
+    }
+
+    @Test
+    void offersRepeaterForABareNameNoteItWrote() {
+        Repeater repeater = mock(Repeater.class);
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.initialize(apiWith(mock(Logging.class), repeater));
+        highlighter.knownNames().addAll(List.of("Work"));
+
+        HttpRequest request = mock(HttpRequest.class);
+        when(request.headers()).thenReturn(List.of());
+        clickMenuItem(highlighter, contextMenuEventFor(notedRequestResponse(request, "Work")));
+
+        verify(repeater).sendToRepeater(request, "1 Work");
+    }
+
+    @Test
+    void ignoresABareNoteThatIsNotAContainerName() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
+        highlighter.knownNames().addAll(List.of("Work"));
+
+        HttpRequest request = mock(HttpRequest.class);
+        when(request.headers()).thenReturn(List.of());
+
+        assertTrue(highlighter.provideMenuItems(contextMenuEventFor(notedRequestResponse(request, "my own note"))).isEmpty());
     }
 
     private static HttpHeader header(String name, String value) {

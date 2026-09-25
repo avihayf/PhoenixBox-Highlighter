@@ -4,7 +4,7 @@ plugins {
 
 // The single source of the release version: stamped into the JAR name and manifest, and shown in
 // Burp, where PhoenixBox users confirm which version they have loaded.
-version = '1.2.0'
+version = '2.0.0'
 
 repositories {
     mavenCentral()
