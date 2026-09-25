@@ -55,8 +55,12 @@ final class SyncService {
     private final LongSupplier clock;
 
     private Map<String, ListenerAddress> current = new HashMap<>();
-    private List<Row> rows = List.of();
-    private long lastSync = -1;
+
+    // Read by Burp's UI thread without taking this object's lock. A sync holds the lock while
+    // Burp applies the listener change, and Burp does that by waiting on its UI thread; if the UI
+    // thread then waited for the lock, both would hang, and Burp's whole UI with them.
+    private volatile List<Row> rows = List.of();
+    private volatile long lastSync = -1;
 
     SyncService(ListenerManager manager, ContainerRegistry registry, KnownNames knownNames, AddressProbe probe,
                 ListenerAddress control, LongSupplier clock) {
@@ -119,15 +123,18 @@ final class SyncService {
         manager.removeAll();
     }
 
-    synchronized List<Row> rows() {
+    /** Lock-free: safe to call from Burp's UI thread while a sync is running. */
+    List<Row> rows() {
         return rows;
     }
 
-    synchronized long lastSync() {
+    /** Lock-free: safe to call from Burp's UI thread while a sync is running. */
+    long lastSync() {
         return lastSync;
     }
 
-    synchronized int listenerCount() {
+    /** Lock-free: safe to call from Burp's UI thread while a sync is running. */
+    int listenerCount() {
         return registry.size();
     }
 

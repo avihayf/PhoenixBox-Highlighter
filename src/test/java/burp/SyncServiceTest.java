@@ -143,6 +143,46 @@ class SyncServiceTest {
     }
 
     @Test
+    void readersNeverWaitForASyncThatIsInsideBurp() throws Exception {
+        // Burp applies a listener change by waiting on its UI thread, and the Burp tab reads these
+        // accessors on that same thread. If they waited for the sync, Burp's UI would deadlock.
+        java.util.concurrent.CountDownLatch insideImport = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        ListenerManagerTest.FakeOptions blocking = new ListenerManagerTest.FakeOptions(export(USER_8080)) {
+            @Override
+            public void importListeners(String next) {
+                insideImport.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                super.importListeners(next);
+            }
+        };
+        SyncService blockingSync = new SyncService(new ListenerManager(blocking, store), registry, knownNames, probe,
+                at("127.0.0.1:8079"), now::get);
+
+        Thread syncing = new Thread(() -> blockingSync.sync(body("[{\"id\":\"a\",\"name\":\"A\",\"color\":\"red\"}]")));
+        syncing.start();
+        assertTrue(insideImport.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+        java.util.concurrent.FutureTask<Boolean> read = new java.util.concurrent.FutureTask<>(() -> {
+            blockingSync.rows();
+            blockingSync.lastSync();
+            blockingSync.listenerCount();
+            return true;
+        });
+        new Thread(read).start();
+        try {
+            assertTrue(read.get(2, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            syncing.join(5000);
+        }
+    }
+
+    @Test
     void anEmptySyncClosesEverything() {
         sync.sync(body("[{\"id\":\"a\",\"name\":\"A\",\"color\":\"red\"}]"));
         sync.sync(body("[]"));

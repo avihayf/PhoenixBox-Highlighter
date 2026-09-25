@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ListenerManagerTest {
 
     /** Stands in for Burp's project settings: remembers what was imported and counts imports. */
-    static final class FakeOptions implements ListenerManager.ProjectOptions {
+    static class FakeOptions implements ListenerManager.ProjectOptions {
         String json;
         int imports;
 
