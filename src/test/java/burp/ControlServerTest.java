@@ -142,6 +142,40 @@ class ControlServerTest {
         assertEquals("127.0.0.1", Pairing.bindHost(ListenerConfig.parse(ListenerConfigTest.export())));
     }
 
+    @Test
+    void rebindsItsPortWhileOldConnectionsSitInTimeWait() throws Exception {
+        // PhoenixBox's syncs leave the control port's connections in TIME_WAIT. A reload must get
+        // the same port back, or the pairing string changes under the user.
+        int port;
+        try (java.net.ServerSocket old = new java.net.ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress());
+             java.net.Socket client = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), old.getLocalPort())) {
+            port = old.getLocalPort();
+            try (java.net.Socket accepted = old.accept()) {
+                accepted.getOutputStream().write(1);
+            }
+            client.getInputStream().read();
+            client.getInputStream().read();
+        }
+
+        ControlServer server = new ControlServer(handler, message -> { });
+        try {
+            assertEquals(port, server.start("127.0.0.1", port, port));
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
+    void skipsAPortSomethingElseAnswersOn() throws Exception {
+        try (java.net.ServerSocket other = new java.net.ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress())) {
+            ControlServer server = new ControlServer(handler, message -> { });
+            int port = other.getLocalPort();
+            org.junit.jupiter.api.Assertions.assertThrows(IOException.class,
+                    () -> server.start("127.0.0.1", port, port));
+            server.stop();
+        }
+    }
+
     private static ByteArrayInputStream stream(String raw) {
         return new ByteArrayInputStream(raw.getBytes(StandardCharsets.ISO_8859_1));
     }

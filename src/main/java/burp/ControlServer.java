@@ -133,20 +133,34 @@ final class ControlServer {
     }
 
     /**
-     * Binds the first free port from {@code preferredPort} up to {@link #LAST_PORT}.
+     * Binds the first usable port from {@link #DEFAULT_PORT} to {@link #LAST_PORT}. Always starting at
+     * the default keeps the port, and so the pairing string, the same across reloads.
      *
      * @return the bound port.
      */
-    int start(String bindHost, int preferredPort) throws IOException {
+    int start(String bindHost) throws IOException {
+        return start(bindHost, DEFAULT_PORT, LAST_PORT);
+    }
+
+    /**
+     * A port is skipped only when something answers on it. The bind itself has address reuse on:
+     * with it off, the connections PhoenixBox's syncs leave in TIME_WAIT made the default port look
+     * taken after every reload, moving the server, and breaking the pairing, for no reason.
+     */
+    int start(String bindHost, int firstPort, int lastPort) throws IOException {
         InetAddress bindAddress = InetAddress.getByName(bindHost);
-        int first = preferredPort >= DEFAULT_PORT && preferredPort <= LAST_PORT ? preferredPort : DEFAULT_PORT;
+        AddressProbe probe = new AddressProbe.Sockets();
 
         IOException lastFailure = null;
-        for (int offset = 0; offset <= LAST_PORT - DEFAULT_PORT; offset++) {
-            int port = DEFAULT_PORT + (first - DEFAULT_PORT + offset) % (LAST_PORT - DEFAULT_PORT + 1);
+        for (int port = firstPort; port <= lastPort; port++) {
+            if (probe.answers(new ListenerAddress(bindHost, port))) {
+                lastFailure = new IOException("port " + port + " is in use");
+                continue;
+            }
+
             ServerSocket candidate = new ServerSocket();
             try {
-                candidate.setReuseAddress(false);
+                candidate.setReuseAddress(true);
                 candidate.bind(new InetSocketAddress(bindAddress, port));
                 server = candidate;
                 Thread acceptor = new Thread(this::acceptLoop, "phoenixbox-control-accept");

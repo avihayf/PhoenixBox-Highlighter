@@ -202,7 +202,8 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     }
 
     private static final String TOKEN_KEY = "pairingToken";
-    private static final String CONTROL_PORT_KEY = "controlPort";
+    /** Where 2.0.0 builds before this fix remembered the control port; now cleared on load. */
+    private static final String LEGACY_CONTROL_PORT_KEY = "controlPort";
 
     private volatile String controlHost = ListenerAddress.LOOPBACK;
     private volatile int controlPort = -1;
@@ -239,19 +240,19 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         if (api.persistence().preferences().getString(TOKEN_KEY) == null) {
             api.persistence().preferences().setString(TOKEN_KEY, Pairing.newToken());
         }
-        Integer storedPort = api.persistence().preferences().getInteger(CONTROL_PORT_KEY);
+        api.persistence().preferences().deleteInteger(LEGACY_CONTROL_PORT_KEY);
 
         controlHost = Pairing.bindHost(manager.userListeners());
         SyncService sync = new SyncService(manager, registry, knownNames, new AddressProbe.Sockets(),
-                new ListenerAddress(controlHost, storedPort == null ? ControlServer.DEFAULT_PORT : storedPort),
+                new ListenerAddress(controlHost, ControlServer.DEFAULT_PORT),
                 System::currentTimeMillis);
 
         ControlServer server = new ControlServer(
                 new ControlServer.Handler(() -> api.persistence().preferences().getString(TOKEN_KEY), sync),
                 api.logging()::logToError);
         try {
-            controlPort = server.start(controlHost, storedPort == null ? ControlServer.DEFAULT_PORT : storedPort);
-            api.persistence().preferences().setInteger(CONTROL_PORT_KEY, controlPort);
+            controlPort = server.start(controlHost);
+            sync.setControl(new ListenerAddress(controlHost, controlPort));
             controlServer = server;
         } catch (IOException e) {
             api.logging().logToError("PhoenixBox Highlighter: no free control port between "

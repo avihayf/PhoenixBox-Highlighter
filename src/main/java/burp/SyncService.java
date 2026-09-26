@@ -51,7 +51,7 @@ final class SyncService {
     private final ContainerRegistry registry;
     private final KnownNames knownNames;
     private final AddressProbe probe;
-    private final ListenerAddress control;
+    private volatile ListenerAddress control;
     private final LongSupplier clock;
 
     private Map<String, ListenerAddress> current = new HashMap<>();
@@ -70,6 +70,11 @@ final class SyncService {
         this.probe = probe;
         this.control = control;
         this.clock = clock;
+    }
+
+    /** The control server's actual address, once it is bound; allocation must never use it. */
+    void setControl(ListenerAddress control) {
+        this.control = control;
     }
 
     synchronized Map<String, Object> sync(Map<String, Object> body) {
