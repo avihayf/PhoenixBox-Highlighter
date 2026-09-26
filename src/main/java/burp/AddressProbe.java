@@ -22,14 +22,17 @@ interface AddressProbe {
     boolean answers(ListenerAddress address);
 
     /**
-     * The real probe. Two checks, because either alone misses a case:
+     * The real probe, in two steps:
      *
      * <ul>
-     *   <li>A <b>connect</b> test catches anything already answering, including a dev server bound
-     *       to all interfaces.
-     *   <li>A <b>strict bind</b> test, with address reuse off, catches the rest. Java turns reuse on
-     *       by default outside Windows, and with it on macOS lets {@code 127.0.0.1:P} bind over
-     *       another process's {@code *:P} and silently take its local traffic.
+     *   <li>A <b>connect</b> test catches anything already listening. That includes a dev server
+     *       bound to all interfaces, which answers on {@code 127.0.0.1} too, so its port is never
+     *       taken over even though a reuse-on bind of {@code 127.0.0.1:P} would succeed beside it.
+     *   <li>A <b>bind</b> test, with address reuse on as Burp itself binds, then tells a usable
+     *       address from one that is not on this machine. Reuse must be on: a port whose listener
+     *       just closed keeps connections in TIME_WAIT for a while, and a reuse-off bind fails on
+     *       those even though nothing listens — which stopped containers getting their old port
+     *       back after the extension was reloaded.
      * </ul>
      */
     final class Sockets implements AddressProbe {
@@ -61,7 +64,7 @@ interface AddressProbe {
             }
 
             try (ServerSocket server = new ServerSocket()) {
-                server.setReuseAddress(false);
+                server.setReuseAddress(true);
                 server.bind(new InetSocketAddress(ip, address.port()));
                 return Result.FREE;
             } catch (BindException e) {

@@ -47,8 +47,9 @@ Automatic listeners use the IP of PhoenixBox's **Burp Suite** preset and the fir
 - is the preset's own address,
 - overlaps one of your listeners (an *all interfaces* listener covers its port on every IP),
 - is the control server's address,
-- is already in use by another program. It is checked with a connect test and a bind with address
-  reuse off, so a dev server on `0.0.0.0` is not quietly taken over.
+- is already in use by another program. A connect test catches anything listening, including a dev
+  server on `0.0.0.0`, so its port is never quietly taken over; a bind test then confirms the IP
+  belongs to this machine. A port whose listener has only just closed counts as free.
 
 A container keeps its address, and gets it back the next time it is marked. In PhoenixBox a container
 can be **pinned** to an exact `ip:port`. If you already built a listener there (say, with invisible
