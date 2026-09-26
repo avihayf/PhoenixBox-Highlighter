@@ -83,6 +83,17 @@ final class SyncService {
             throw new BadSync("unsupported protocol; this Highlighter speaks protocol " + PROTOCOL);
         }
 
+        // Unpairing: PhoenixBox is about to fall back to the legacy colour header, so leave paired
+        // mode now rather than when the lease runs out, or that header would not be stripped.
+        if (Boolean.TRUE.equals(body.get("release"))) {
+            release();
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("protocol", (long) PROTOCOL);
+            response.put("jar", ContainerHighlighter.VERSION);
+            response.put("assignments", new LinkedHashMap<String, Object>());
+            return response;
+        }
+
         ListenerAddress preset = parsePreset(body.get("preset"));
         List<AddressAllocator.Request> requests = parseContainers(body.get("containers"));
 
@@ -120,12 +131,35 @@ final class SyncService {
         if (lastSync < 0 || clock.getAsLong() - lastSync < LEASE_MS) {
             return;
         }
+        release();
+    }
 
+    /**
+     * Leaves paired mode now: after a pairing is revoked in Burp, that PhoenixBox falls back to the
+     * legacy colour header, which is only stripped while unpaired. A PhoenixBox still paired
+     * re-enters paired mode with its next sync. Never call this on Burp's UI thread: it changes
+     * Burp's listeners, which Burp does on that thread.
+     */
+    synchronized void releaseNow() {
+        release();
+    }
+
+    /** Back to unpaired: no container listeners, and the legacy colour header handled again. */
+    private void release() {
         lastSync = -1;
         current = new HashMap<>();
         rows = List.of();
         registry.clear();
         manager.removeAll();
+    }
+
+    /**
+     * Whether a paired PhoenixBox is driving highlighting: it synced within the lease and has not
+     * unpaired. PhoenixBox sends no headers then, so none are read or stripped. Lock-free: called
+     * for every proxied request.
+     */
+    boolean isPaired() {
+        return lastSync >= 0;
     }
 
     /** Lock-free: safe to call from Burp's UI thread while a sync is running. */

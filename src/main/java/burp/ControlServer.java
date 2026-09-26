@@ -10,7 +10,6 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -18,7 +17,6 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 /**
  * The small HTTP endpoint PhoenixBox talks to.
@@ -45,11 +43,11 @@ final class ControlServer {
     /** What the endpoint serves, kept apart from sockets so the rules are testable. */
     static final class Handler {
 
-        private final Supplier<String> token;
+        private final PairingService pairing;
         private final SyncService sync;
 
-        Handler(Supplier<String> token, SyncService sync) {
-            this.token = token;
+        Handler(PairingService pairing, SyncService sync) {
+            this.pairing = pairing;
             this.sync = sync;
         }
 
@@ -65,7 +63,30 @@ final class ControlServer {
                 return error(403, "forbidden origin");
             }
 
-            if (!authorized(request.headers().get("authorization"))) {
+            // Discovery and pairing need no token, only a Firefox extension's Origin, which Firefox
+            // sends on every extension POST and a web page cannot set. Pairing still does nothing
+            // until the user clicks Allow in Burp.
+            if ("POST".equals(request.method()) && "/v1/hello".equals(request.path())) {
+                Response refused = requireExtension(request, origin);
+                if (refused != null) {
+                    return refused;
+                }
+                Map<String, Object> hello = new LinkedHashMap<>();
+                hello.put("app", "phoenixbox-highlighter");
+                hello.put("protocol", (long) SyncService.PROTOCOL);
+                hello.put("jar", ContainerHighlighter.VERSION);
+                return new Response(200, Json.write(hello));
+            }
+
+            if ("POST".equals(request.method()) && "/v1/pair".equals(request.path())) {
+                Response refused = requireExtension(request, origin);
+                if (refused != null) {
+                    return refused;
+                }
+                return pair(request, origin);
+            }
+
+            if (!pairing.isAuthorized(request.headers().get("authorization"))) {
                 return error(401, "missing or wrong pairing token");
             }
 
@@ -100,14 +121,52 @@ final class ControlServer {
             return error(404, "not found");
         }
 
-        private boolean authorized(String header) {
-            String expected = token.get();
-            if (header == null || expected == null || expected.isEmpty()) {
-                return false;
+        private Response pair(Request request, String origin) {
+            Map<String, Object> body;
+            try {
+                body = Json.asObject(Json.parse(request.body()));
+            } catch (IllegalArgumentException e) {
+                return error(400, "body is not valid JSON");
             }
-            byte[] given = header.getBytes(StandardCharsets.UTF_8);
-            byte[] wanted = ("Bearer " + expected).getBytes(StandardCharsets.UTF_8);
-            return MessageDigest.isEqual(given, wanted);
+            if (body == null) {
+                return error(400, "expected a JSON object");
+            }
+
+            Object client = body.get("client");
+            Object label = body.get("label");
+            PairingService.Result result = pairing.request(
+                    client instanceof String ? (String) client : null,
+                    label instanceof String ? (String) label : null,
+                    origin);
+
+            Map<String, Object> reply = new LinkedHashMap<>();
+            switch (result.status()) {
+                case APPROVED:
+                    reply.put("status", "approved");
+                    reply.put("token", result.token());
+                    return new Response(200, Json.write(reply));
+                case PENDING:
+                    reply.put("status", "pending");
+                    return new Response(202, Json.write(reply));
+                case BUSY:
+                    return error(429, "another PhoenixBox is waiting for approval in Burp");
+                case DENIED:
+                    return error(403, "pairing was denied in Burp");
+                default:
+                    return error(400, "invalid client id");
+            }
+        }
+
+        /** Only a Firefox extension may discover or pair: its POSTs carry a moz-extension Origin. */
+        private static Response requireExtension(Request request, String origin) {
+            if (origin == null || !origin.startsWith("moz-extension://")) {
+                return error(403, "only the PhoenixBox extension may pair");
+            }
+            String contentType = request.headers().getOrDefault("content-type", "");
+            if (!contentType.toLowerCase(Locale.ROOT).startsWith("application/json")) {
+                return error(415, "expected application/json");
+            }
+            return null;
         }
 
         private static Response error(int status, String message) {
@@ -295,7 +354,9 @@ final class ControlServer {
             case 403: return "Forbidden";
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
+            case 202: return "Accepted";
             case 415: return "Unsupported Media Type";
+            case 429: return "Too Many Requests";
             default: return "Error";
         }
     }

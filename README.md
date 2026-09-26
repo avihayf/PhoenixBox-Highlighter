@@ -1,8 +1,9 @@
 # PhoenixBox Highlighter
 
-A Burp Suite extension that colours proxy history by [PhoenixBox](https://github.com/avihayf/PhoenixBox) container, and notes which container each request came from, **without anything being added to the request**.
+A Burp Suite extension that colours proxy history by [PhoenixBox](https://github.com/avihayf/PhoenixBox) container, and notes which container each request came from. It works in two modes:
 
-Each container you mark in PhoenixBox gets its own Burp proxy listener, opened by this extension. PhoenixBox sends that container's traffic to its listener, and the extension recognises the container by the listener a request arrives on (`listenerInterface()`), so the request is forwarded exactly as the browser sent it.
+- **Paired with PhoenixBox (automatic, one click in Burp):** each container you mark in PhoenixBox gets its own Burp proxy listener, opened by this extension. The extension recognises the container by the listener a request arrives on (`listenerInterface()`). Requests carry no extra header, and are forwarded exactly as the browser sent them.
+- **Not paired:** PhoenixBox marks a container's requests with an `x-mac-container-color` header, as it does for the old v1.x Highlighter. The extension colours the request from it and strips the header before it goes anywhere.
 
 ## How It Works
 
@@ -32,12 +33,19 @@ Each container you mark in PhoenixBox gets its own Burp proxy listener, opened b
 
 ## Pairing
 
-The **PhoenixBox** tab shows a pairing string, `phx1:<host>:<port>:<token>`. Paste it into PhoenixBox
-once. **New token** revokes it.
+Pairing is automatic, with one click in Burp:
+1. PhoenixBox looks for this extension on its Burp proxy's host (`POST /v1/hello`) and asks to pair (`POST /v1/pair`).
+2. Burp shows **"PhoenixBox … wants to pair: Allow / Deny"**, and the request also appears at the top of the **PhoenixBox** tab.
+3. Allowing gives that PhoenixBox profile its own token.
 
-The control server listens where Burp's first proxy listener does (loopback, a specific IP, or all
-interfaces), on port 8079 or the next free port up to 8099. Every request needs the token; requests
-carrying a web page `Origin`, and all CORS preflights, are refused, so a website cannot reach it.
+The tab lists paired profiles with **Revoke**. **Revoke all** also replaces the manual pairing string, `phx1:<host>:<port>:<token>`, which is the fallback when PhoenixBox can't find Burp.
+
+The Allow click is the security gate. Without it, another Firefox extension or a local program could make Burp open listeners. The control server listens where Burp's first proxy listener does (loopback, a specific IP, or all interfaces), on port 8079, or the next port up to 8099 if 8079 is taken.
+- Discovery and pairing need a Firefox extension's `Origin` (`moz-extension://…`), which web pages can't send.
+- Everything else needs a token.
+- CORS preflights are always refused.
+
+A website therefore can't reach it.
 
 ## Listener Addresses
 
@@ -75,11 +83,13 @@ Firefox's *toolbar* colour has no Burp equivalent: those containers are named bu
 Traffic from a marked container gets the **container name** as its note, e.g. `Work`; the highlight
 carries the colour. A note you already wrote is never overwritten.
 
-## Older PhoenixBox Versions
+## Not Paired: the Colour Header
 
-PhoenixBox before 3.1.0 added `x-mac-container-color` (and briefly `x-mac-container-name`) headers
-instead. This extension still honours them and **always strips both**, at the Proxy receive stage and
-again for every tool before a request is sent, so they never reach a target.
+While no PhoenixBox is paired, PhoenixBox marks containers with an `x-mac-container-color` header, as it does for the old v1.x Highlighter. It never sends the container name.
+- The request is coloured, with no note.
+- `x-mac-container-*` headers are stripped at the Proxy receive stage, and again for every tool before a request is sent, so they don't reach a target.
+
+**While paired**, PhoenixBox sends no header, so this extension neither reads nor strips them. It is in paired mode while a paired PhoenixBox has synced within the last two minutes and hasn't unpaired. Unpairing, revoking a pairing, or two minutes of silence switch it back at once.
 
 ## Sending to Repeater
 
@@ -121,8 +131,8 @@ note or a tab label.
 4. Set **Extension type** to **Java** and select the JAR.
 5. Check the version: the Extensions list shows **PhoenixBox Highlighter v2.0.0**, and Burp has a
    new **PhoenixBox** tab.
-6. Pair: copy the pairing string from the **PhoenixBox** tab into PhoenixBox's **Highlighter** tile,
-   then mark containers with the highlighter button in PhoenixBox's container list.
+6. In PhoenixBox, select the **Burp Suite** proxy preset and mark containers with the highlighter
+   button. When Burp asks whether to pair PhoenixBox, click **Allow**.
 
 ## Building & Testing
 

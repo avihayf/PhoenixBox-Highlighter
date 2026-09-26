@@ -29,11 +29,10 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
@@ -41,337 +40,216 @@ import static org.mockito.Mockito.*;
 class ContainerHighlighterTest {
 
     /** The canonical casing PhoenixBox sends, which is not the lower-case form we match against. */
-    private static final String COLOR_HEADER = "X-Mac-Container-Color";
-    private static final String NAME_HEADER = "X-Mac-Container-Name";
+    private static final String COLOR_HEADER = "X-MAC-Container-Color";
+    private static final String NAME_HEADER = "X-MAC-Container-Name";
 
-    /**
-     * Shared wire-format vectors: {decoded name, value as it arrives on the header}. PhoenixBox
-     * keeps the same table and asserts the encode direction, so both halves of the contract are
-     * pinned to identical values rather than to prose.
-     *
-     * Keep in sync with NAME_VECTORS in PhoenixBox test/request-header-helpers.test.js, with one
-     * deliberate exception: that table also carries a CR/LF vector, which cannot round-trip here
-     * because control characters are stripped out of tab labels. See
-     * {@link #keepsControlCharactersOutOfRepeaterTabNames()} instead.
-     */
-    private static final String[][] CONTAINER_NAME_VECTORS = {
-            {"Attacker", "Attacker"},
-            {"Admin Account", "Admin%20Account"},
-            // encodeURIComponent leaves "+" literal while URLDecoder would read it as a space;
-            // this vector is what pins the decoder choice on this side.
-            {"C++", "C%2B%2B"},
-            {"50%", "50%25"},
-            {"אבטחה", "%D7%90%D7%91%D7%98%D7%97%D7%94"},
-            {"🔥", "%F0%9F%94%A5"},
-    };
+    // ---- Legacy mode: not paired, so PhoenixBox marks requests with the colour header -----------
 
     @Test
-    void colorsStripsAndNotesAtReceiveStage() {
+    void legacyColoursFromTheHeaderStripsItAndWritesNoNote() {
         ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest withoutColor = mock(HttpRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, " Blue ", "Attacker");
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(withoutColor);
-        when(withoutColor.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
+        InterceptedRequest request = mock(InterceptedRequest.class);
+        HttpRequest clean = mock(HttpRequest.class);
+        stubHeaders(request, " Blue ", null);
+        when(request.annotations()).thenReturn(annotations);
+        when(request.withRemovedHeader(COLOR_HEADER)).thenReturn(clean);
 
-        ProxyRequestReceivedAction expectedAction = mock(ProxyRequestReceivedAction.class);
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(expectedAction);
+        try (MockedStatic<ProxyRequestReceivedAction> actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            ProxyRequestReceivedAction action = mock(ProxyRequestReceivedAction.class);
+            actions.when(() -> ProxyRequestReceivedAction.continueWith(clean, annotations)).thenReturn(action);
 
-            assertSame(expectedAction, highlighter.handleRequestReceived(interceptedRequest));
+            assertSame(action, highlighter.handleRequestReceived(request));
         }
 
-        // Both headers gone, the request coloured, and the container recorded as a note so it
-        // survives into HTTP history and the Send-to-Repeater action.
-        verify(interceptedRequest).withRemovedHeader(COLOR_HEADER);
-        verify(withoutColor).withRemovedHeader(NAME_HEADER);
         verify(annotations).withHighlightColor(HighlightColor.BLUE);
-        verify(annotations).withNotes("🔵 Attacker");
-    }
-
-    // The headers arrive canonically cased, but we match on a lower-case constant.
-    @Test
-    void matchesHeaderNamesRegardlessOfCasing() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        List<HttpHeader> shoutedHeaders = List.of(header("X-MAC-CONTAINER-COLOR", "red"));
-        when(interceptedRequest.headers()).thenReturn(shoutedHeaders);
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader("X-MAC-CONTAINER-COLOR")).thenReturn(cleanRequest);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-            highlighter.handleRequestReceived(interceptedRequest);
-        }
-
-        verify(interceptedRequest).withRemovedHeader("X-MAC-CONTAINER-COLOR");
-        verify(annotations).withHighlightColor(HighlightColor.RED);
-    }
-
-    @Test
-    void notesTheColourWhenNoNameHeaderIsPresent() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, "red", null);
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-            highlighter.handleRequestReceived(interceptedRequest);
-        }
-
-        verify(annotations).withNotes("🔴 red");
-    }
-
-    @Test
-    void doesNotClobberANoteTheUserAlreadyWrote() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        Annotations annotations = selfAnnotations();
-        when(annotations.hasNotes()).thenReturn(true);
-
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, "red", null);
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-            highlighter.handleRequestReceived(interceptedRequest);
-        }
-
         verify(annotations, never()).withNotes(anyString());
     }
 
     @Test
-    void stripsAtReceiveEvenWhenColorIsUnrecognized() {
+    void legacyAlsoStripsANameHeaderAnythingElseSent() {
         ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, "chartreuse", null);
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-            highlighter.handleRequestReceived(interceptedRequest);
-        }
-
-        verify(annotations, never()).withHighlightColor(any());
-        // The colour is unknown, but it is still a value, so it is still noted — under the
-        // neutral marker, since there is no colour to show.
-        verify(annotations).withNotes("⚪ chartreuse");
-    }
-
-    /**
-     * Every colour PhoenixBox can send must map to its own marker. A colour that fell through to the
-     * neutral one, or shared a marker with another colour, would make the Notes column ambiguous —
-     * which is the whole point of the colour cue.
-     */
-    @Test
-    void givesEverySupportedColourItsOwnDistinctMarker() {
-        List<String> colors = List.of("blue", "cyan", "green", "yellow", "orange", "red", "pink", "magenta");
-        List<String> markersSeen = new ArrayList<>();
-
-        for (String color : colors) {
-            ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-            Annotations annotations = selfAnnotations();
-            InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-            HttpRequest cleanRequest = mock(HttpRequest.class);
-            stubHeaders(interceptedRequest, color, null);
-            when(interceptedRequest.annotations()).thenReturn(annotations);
-            when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-            try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-                receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                    .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-                highlighter.handleRequestReceived(interceptedRequest);
-            }
-
-            ArgumentCaptor<String> note = ArgumentCaptor.forClass(String.class);
-            verify(annotations).withNotes(note.capture());
-
-            String marker = note.getValue().substring(0, note.getValue().indexOf(' '));
-            assertNotEquals("⚪", marker, color + " fell through to the neutral marker");
-            assertFalse(markersSeen.contains(marker), color + " reuses the marker " + marker);
-            markersSeen.add(marker);
-        }
-
-        assertEquals(colors.size(), markersSeen.size());
-    }
-
-    @Test
-    void leavesUntaggedRequestsCompletelyAloneAtReceiveStage() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-
-        ProxyRequestReceivedAction expectedAction = mock(ProxyRequestReceivedAction.class);
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(interceptedRequest))
-                                .thenReturn(expectedAction);
-
-            assertSame(expectedAction, highlighter.handleRequestReceived(interceptedRequest));
-        }
-
-        verify(interceptedRequest, never()).withRemovedHeader(anyString());
-        verify(interceptedRequest, never()).annotations();
-    }
-
-    @Test
-    void stripsHeaderFromNonProxyToolsAsWell() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(requestToBeSent, "red", null);
-        when(requestToBeSent.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-        RequestToBeSentAction expectedAction = mock(RequestToBeSentAction.class);
-        try (MockedStatic<RequestToBeSentAction> actionStatic = mockStatic(RequestToBeSentAction.class)) {
-            actionStatic.when(() -> RequestToBeSentAction.continueWith(cleanRequest)).thenReturn(expectedAction);
-
-            assertSame(expectedAction, highlighter.handleHttpRequestToBeSent(requestToBeSent));
-        }
-    }
-
-    @Test
-    void doesNotRewriteToolTrafficThatHasNoContainerHeader() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
-
-        RequestToBeSentAction expectedAction = mock(RequestToBeSentAction.class);
-        try (MockedStatic<RequestToBeSentAction> actionStatic = mockStatic(RequestToBeSentAction.class)) {
-            actionStatic.when(() -> RequestToBeSentAction.continueWith(requestToBeSent)).thenReturn(expectedAction);
-
-            assertSame(expectedAction, highlighter.handleHttpRequestToBeSent(requestToBeSent));
-        }
-
-        verify(requestToBeSent, never()).withRemovedHeader(anyString());
-    }
-
-    @Test
-    void stripsBothHeadersBeforeTheRequestIsSent() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-
-        Annotations annotations = selfAnnotations();
-
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
+        InterceptedRequest request = mock(InterceptedRequest.class);
         HttpRequest withoutColor = mock(HttpRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, "red", "Attacker");
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(withoutColor);
-        when(withoutColor.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
+        HttpRequest clean = mock(HttpRequest.class);
+        stubHeaders(request, "red", "Attacker");
+        when(request.annotations()).thenReturn(annotations);
+        when(request.withRemovedHeader(COLOR_HEADER)).thenReturn(withoutColor);
+        when(withoutColor.withRemovedHeader(NAME_HEADER)).thenReturn(clean);
 
-        ProxyRequestToBeSentAction expectedAction = mock(ProxyRequestToBeSentAction.class);
-        try (MockedStatic<ProxyRequestToBeSentAction> toBeSentActionStatic = mockStatic(ProxyRequestToBeSentAction.class)) {
-            toBeSentActionStatic.when(() -> ProxyRequestToBeSentAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(expectedAction);
-
-            assertSame(expectedAction, highlighter.handleRequestToBeSent(interceptedRequest));
+        try (MockedStatic<ProxyRequestReceivedAction> actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
+            actions.verify(() -> ProxyRequestReceivedAction.continueWith(clean, annotations));
         }
-
-        verify(interceptedRequest).withRemovedHeader(COLOR_HEADER);
-        verify(withoutColor).withRemovedHeader(NAME_HEADER);
+        verify(annotations, never()).withNotes(anyString());
     }
 
     @Test
-    void stripsTheNameHeaderEvenWhenTheColourHeaderIsAbsent() {
+    void legacyLeavesRequestsWithoutTheHeaderAlone() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+
+        InterceptedRequest request = mock(InterceptedRequest.class);
+        HttpHeader host = header("Host", "example.com");
+        when(request.headers()).thenReturn(List.of(host));
+
+        try (MockedStatic<ProxyRequestReceivedAction> actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
+            actions.verify(() -> ProxyRequestReceivedAction.continueWith(request));
+        }
+        verify(request, never()).withRemovedHeader(anyString());
+    }
+
+    @Test
+    void legacyStripsAnUnrecognisedColourButDoesNotHighlightIt() {
         ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
         Annotations annotations = selfAnnotations();
+        InterceptedRequest request = mock(InterceptedRequest.class);
+        HttpRequest clean = mock(HttpRequest.class);
+        stubHeaders(request, "chartreuse", null);
+        when(request.annotations()).thenReturn(annotations);
+        when(request.withRemovedHeader(COLOR_HEADER)).thenReturn(clean);
 
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, null, "Attacker");
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
-
-        ProxyRequestToBeSentAction expectedAction = mock(ProxyRequestToBeSentAction.class);
-        try (MockedStatic<ProxyRequestToBeSentAction> toBeSentActionStatic = mockStatic(ProxyRequestToBeSentAction.class)) {
-            toBeSentActionStatic.when(() -> ProxyRequestToBeSentAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(expectedAction);
-
-            assertSame(expectedAction, highlighter.handleRequestToBeSent(interceptedRequest));
+        try (MockedStatic<ProxyRequestReceivedAction> actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
+            actions.verify(() -> ProxyRequestReceivedAction.continueWith(clean, annotations));
         }
-
         verify(annotations, never()).withHighlightColor(any());
     }
 
-    /**
-     * The safety net for Burp's own "Send to Repeater": that copies the original request, headers
-     * and all, so the tab shows them. They must still never reach the wire when it is sent.
-     */
     @Test
-    void stripsBothHeadersWhenRepeaterSendsATabThatStillCarriesThem() {
+    void legacyStripsAtTheSendStageAndForEveryTool() {
         ContainerHighlighter highlighter = new ContainerHighlighter(false);
 
-        HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
-        HttpRequest withoutColor = mock(HttpRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(requestToBeSent, "red", "Attacker");
-        when(requestToBeSent.withRemovedHeader(COLOR_HEADER)).thenReturn(withoutColor);
-        when(withoutColor.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
+        Annotations annotations = selfAnnotations();
+        InterceptedRequest proxied = mock(InterceptedRequest.class);
+        HttpRequest cleanProxied = mock(HttpRequest.class);
+        stubHeaders(proxied, "red", null);
+        when(proxied.annotations()).thenReturn(annotations);
+        when(proxied.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanProxied);
 
-        RequestToBeSentAction expectedAction = mock(RequestToBeSentAction.class);
-        try (MockedStatic<RequestToBeSentAction> actionStatic = mockStatic(RequestToBeSentAction.class)) {
-            actionStatic.when(() -> RequestToBeSentAction.continueWith(cleanRequest)).thenReturn(expectedAction);
+        HttpRequestToBeSent tool = mock(HttpRequestToBeSent.class);
+        HttpRequest cleanTool = mock(HttpRequest.class);
+        stubHeaders(tool, "red", null);
+        when(tool.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanTool);
 
-            assertSame(expectedAction, highlighter.handleHttpRequestToBeSent(requestToBeSent));
+        try (MockedStatic<ProxyRequestToBeSentAction> proxyActions = mockStatic(ProxyRequestToBeSentAction.class);
+             MockedStatic<RequestToBeSentAction> toolActions = mockStatic(RequestToBeSentAction.class)) {
+            highlighter.handleRequestToBeSent(proxied);
+            highlighter.handleHttpRequestToBeSent(tool);
+            proxyActions.verify(() -> ProxyRequestToBeSentAction.continueWith(cleanProxied, annotations));
+            toolActions.verify(() -> RequestToBeSentAction.continueWith(cleanTool));
+        }
+    }
+
+    // ---- Paired mode: PhoenixBox sends no headers, so none are read or stripped ------------------
+
+    @Test
+    void pairedPassesRequestsThroughUntouched() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.setPairedCheck(() -> true);
+
+        InterceptedRequest proxied = mock(InterceptedRequest.class);
+        HttpRequestToBeSent tool = mock(HttpRequestToBeSent.class);
+        stubHeaders(proxied, "red", null);
+        stubHeaders(tool, "red", null);
+
+        try (MockedStatic<ProxyRequestReceivedAction> received = mockStatic(ProxyRequestReceivedAction.class);
+             MockedStatic<ProxyRequestToBeSentAction> toBeSent = mockStatic(ProxyRequestToBeSentAction.class);
+             MockedStatic<RequestToBeSentAction> toolActions = mockStatic(RequestToBeSentAction.class)) {
+            highlighter.handleRequestReceived(proxied);
+            highlighter.handleRequestToBeSent(proxied);
+            highlighter.handleHttpRequestToBeSent(tool);
+
+            received.verify(() -> ProxyRequestReceivedAction.continueWith(proxied));
+            toBeSent.verify(() -> ProxyRequestToBeSentAction.continueWith(proxied));
+            toolActions.verify(() -> RequestToBeSentAction.continueWith(tool));
+        }
+        verify(proxied, never()).withRemovedHeader(anyString());
+        verify(proxied, never()).annotations();
+        verify(tool, never()).withRemovedHeader(anyString());
+    }
+
+    // ---- Traffic on a container's listener -------------------------------------------------------
+
+    @Test
+    void highlightsAndNamesTrafficFromAContainerListenerWithoutChangingIt() {
+        ContainerHighlighter highlighter = listening("Work", "red");
+        highlighter.setPairedCheck(() -> true);
+
+        Annotations annotations = selfAnnotations();
+        InterceptedRequest request = mock(InterceptedRequest.class);
+        when(request.listenerInterface()).thenReturn("127.0.0.1:18080");
+        when(request.annotations()).thenReturn(annotations);
+
+        try (MockedStatic<ProxyRequestReceivedAction> actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            ProxyRequestReceivedAction action = mock(ProxyRequestReceivedAction.class);
+            actions.when(() -> ProxyRequestReceivedAction.continueWith(request, annotations)).thenReturn(action);
+
+            assertSame(action, highlighter.handleRequestReceived(request));
         }
 
-        verify(requestToBeSent).withRemovedHeader(COLOR_HEADER);
-        verify(withoutColor).withRemovedHeader(NAME_HEADER);
+        verify(annotations).withHighlightColor(HighlightColor.RED);
+        // The note is the bare name: the highlight already shows the colour.
+        verify(annotations).withNotes("Work");
+        verify(request, never()).withRemovedHeader(anyString());
     }
 
     @Test
-    void stripsTheNameHeaderFromNonProxyToolsAsWell() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+    void keepsTheUsersNoteOnContainerListenerTraffic() {
+        ContainerHighlighter highlighter = listening("Work", "blue");
 
-        HttpRequestToBeSent requestToBeSent = mock(HttpRequestToBeSent.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(requestToBeSent, null, "Attacker");
-        when(requestToBeSent.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
+        Annotations annotations = selfAnnotations();
+        when(annotations.hasNotes()).thenReturn(true);
+        InterceptedRequest request = mock(InterceptedRequest.class);
+        when(request.listenerInterface()).thenReturn("127.0.0.1:18080");
+        when(request.annotations()).thenReturn(annotations);
 
-        RequestToBeSentAction expectedAction = mock(RequestToBeSentAction.class);
-        try (MockedStatic<RequestToBeSentAction> actionStatic = mockStatic(RequestToBeSentAction.class)) {
-            actionStatic.when(() -> RequestToBeSentAction.continueWith(cleanRequest)).thenReturn(expectedAction);
-
-            assertSame(expectedAction, highlighter.handleHttpRequestToBeSent(requestToBeSent));
+        try (MockedStatic<ProxyRequestReceivedAction> ignored = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
         }
+
+        verify(annotations).withHighlightColor(HighlightColor.BLUE);
+        verify(annotations, never()).withNotes(anyString());
     }
+
+    // ---- Repeater ---------------------------------------------------------------------------------
+
+    @Test
+    void offersRepeaterForANoteItWroteAndNumbersTheTabs() {
+        Repeater repeater = mock(Repeater.class);
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.initialize(apiWith(mock(Logging.class), repeater));
+        highlighter.knownNames().addAll(List.of("Work", "Admin"));
+
+        HttpRequest first = mock(HttpRequest.class);
+        HttpRequest second = mock(HttpRequest.class);
+        clickMenuItem(highlighter, contextMenuEventFor(notedRequestResponse(first, "Work")));
+        clickMenuItem(highlighter, contextMenuEventFor(notedRequestResponse(second, "Admin")));
+
+        verify(repeater).sendToRepeater(first, "1 Work");
+        verify(repeater).sendToRepeater(second, "2 Admin");
+    }
+
+    @Test
+    void ignoresNotesThatAreNotContainerNames() {
+        ContainerHighlighter highlighter = new ContainerHighlighter(false);
+        highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
+        highlighter.knownNames().addAll(List.of("Work"));
+
+        assertTrue(highlighter.provideMenuItems(
+                contextMenuEventFor(notedRequestResponse(mock(HttpRequest.class), "my own note"))).isEmpty());
+        assertTrue(highlighter.provideMenuItems(
+                contextMenuEventFor(notedRequestResponse(mock(HttpRequest.class), "🔴 Work"))).isEmpty());
+    }
+
+    // ---- Misc -------------------------------------------------------------------------------------
 
     @Test
     void showsItsReleaseVersionInBurp() {
-        // PhoenixBox asks the user to confirm the JAR version before sending container names,
-        // so the version has to be visible in Burp itself: in the Extensions list and the output.
         Logging logging = mock(Logging.class);
         MontoyaApi api = apiWith(logging);
         new ContainerHighlighter(false).initialize(api);
@@ -383,294 +261,39 @@ class ContainerHighlighterTest {
     }
 
     @Test
-    void reportsEachUnrecognizedColorValueOnlyOnce() {
+    void reportsEachUnrecognizedColorValueOnlyOnceAndTruncatesIt() {
         Logging logging = mock(Logging.class);
         ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.initialize(apiWith(logging));
 
-        Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, "Chartreuse", null);
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-            highlighter.handleRequestReceived(interceptedRequest);
-            highlighter.handleRequestReceived(interceptedRequest);
+        for (String value : new String[]{"chartreuse", "chartreuse", "x".repeat(10_000)}) {
+            InterceptedRequest request = mock(InterceptedRequest.class);
+            HttpRequest clean = mock(HttpRequest.class);
+            stubHeaders(request, value, null);
+            Annotations annotations = selfAnnotations();
+            when(request.annotations()).thenReturn(annotations);
+            when(request.withRemovedHeader(COLOR_HEADER)).thenReturn(clean);
+            try (MockedStatic<ProxyRequestReceivedAction> ignored = mockStatic(ProxyRequestReceivedAction.class)) {
+                highlighter.handleRequestReceived(request);
+            }
         }
 
-        ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
-        verify(logging, times(1)).logToError(message.capture());
-        assertTrue(message.getValue().contains("chartreuse"), message.getValue());
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        verify(logging, times(2)).logToError(messages.capture());
+        assertTrue(messages.getAllValues().get(0).contains("chartreuse"));
+        String truncated = messages.getAllValues().get(1);
+        assertTrue(truncated.length() < 300 && truncated.contains("xxx…"), truncated);
     }
 
-    @Test
-    void truncatesAnOversizedUnrecognizedColorInTheLog() {
-        // The header is attacker-influenced; a huge value must not be copied into Burp's log whole.
-        Logging logging = mock(Logging.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(logging));
+    // ---- Helpers ----------------------------------------------------------------------------------
 
-        Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        stubHeaders(interceptedRequest, "x".repeat(10_000), null);
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-        when(interceptedRequest.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(cleanRequest, annotations))
-                                .thenReturn(mock(ProxyRequestReceivedAction.class));
-
-            highlighter.handleRequestReceived(interceptedRequest);
-        }
-
-        ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
-        verify(logging).logToError(message.capture());
-        assertTrue(message.getValue().length() < 300, "logged " + message.getValue().length() + " chars");
-        assertTrue(message.getValue().contains("xxx…"), message.getValue());
-    }
-
-    @Test
-    void namesRepeaterTabsWithSequenceNumberAndContainerColor() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-        HttpRequest cleanRed = mock(HttpRequest.class);
-        HttpRequest cleanBlue = mock(HttpRequest.class);
-
-        clickMenuItem(highlighter, contextMenuEventFor(taggedRequest(" Red ", cleanRed)));
-        clickMenuItem(highlighter, contextMenuEventFor(taggedRequest("blue", cleanBlue)));
-
-        verify(repeater).sendToRepeater(cleanRed, "1 red");
-        verify(repeater).sendToRepeater(cleanBlue, "2 blue");
-    }
-
-    @Test
-    void sendsTheStrippedRequestToRepeaterSoTheEditorMatchesTheWire() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        HttpRequest tagged = taggedRequest("red", cleanRequest);
-
-        clickMenuItem(highlighter, contextMenuEventFor(tagged));
-
-        verify(tagged).withRemovedHeader(COLOR_HEADER);
-        verify(repeater, never()).sendToRepeater(same(tagged), anyString());
-    }
-
-    @Test
-    void namesRepeaterTabsWithTheDecodedContainerName() {
-        for (String[] vector : CONTAINER_NAME_VECTORS) {
-            String expectedName = vector[0];
-            String headerValue = vector[1];
-
-            Repeater repeater = mock(Repeater.class);
-            ContainerHighlighter highlighter = new ContainerHighlighter(false);
-            highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-            HttpRequest cleanRequest = mock(HttpRequest.class);
-            clickMenuItem(highlighter,
-                    contextMenuEventFor(taggedRequest("red", headerValue, cleanRequest)));
-
-            verify(repeater).sendToRepeater(cleanRequest, "1 " + expectedName);
-        }
-    }
-
-    @Test
-    void fallsBackToTheColourWhenTheNameCannotBeDecoded() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        // A truncated escape sequence: URLDecoder throws on this.
-        clickMenuItem(highlighter,
-                contextMenuEventFor(taggedRequest("red", "%E0%A4%A", cleanRequest)));
-
-        verify(repeater).sendToRepeater(cleanRequest, "1 red");
-    }
-
-    @Test
-    void keepsControlCharactersOutOfRepeaterTabNames() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-        HttpRequest cleanRequest = mock(HttpRequest.class);
-        clickMenuItem(highlighter,
-                contextMenuEventFor(taggedRequest("red", "a%0D%0Ab", cleanRequest)));
-
-        verify(repeater).sendToRepeater(cleanRequest, "1 ab");
-    }
-
-    @Test
-    void namesRepeaterTabsFromTheStoredNoteWhenHeadersAreAlreadyGone() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-        // A request as it looks in HTTP history: both headers stripped, but our note survives.
-        HttpRequest request = mock(HttpRequest.class);
-
-        clickMenuItem(highlighter, contextMenuEventFor(notedRequestResponse(request, "🟢 Admin Account")));
-
-        verify(repeater).sendToRepeater(request, "1 Admin Account");
-    }
-
-    /**
-     * An editor can be focused while carrying no annotations of its own. Acting on the table
-     * selection instead keeps the menu item from silently doing nothing.
-     */
-    @Test
-    void fallsBackToTheTableSelectionWhenTheFocusedEditorIsNotTagged() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-
-        HttpRequestResponse untagged = mock(HttpRequestResponse.class);
-        when(untagged.request()).thenReturn(mock(HttpRequest.class));
-
-        HttpRequest request = mock(HttpRequest.class);
-        HttpRequestResponse selected = notedRequestResponse(request, "🔵 Recon");
-
-        MessageEditorHttpRequestResponse editor = mock(MessageEditorHttpRequestResponse.class);
-        when(editor.requestResponse()).thenReturn(untagged);
-
-        ContextMenuEvent event = mock(ContextMenuEvent.class);
-        when(event.messageEditorRequestResponse()).thenReturn(Optional.of(editor));
-        when(event.selectedRequestResponses()).thenReturn(List.of(selected));
-
-        clickMenuItem(highlighter, event);
-
-        verify(repeater).sendToRepeater(request, "1 Recon");
-    }
-
-    @Test
-    void ignoresNotesThatAreNotOurs() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
-
-        HttpRequest request = mock(HttpRequest.class);
-
-        // A note the user wrote themselves must not summon our menu item.
-        ContextMenuEvent event = contextMenuEventFor(notedRequestResponse(request, "look at this later"));
-        assertTrue(highlighter.provideMenuItems(event).isEmpty());
-    }
-
-    @Test
-    void offersNoMenuItemForRequestsWithoutTheContainerHeader() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
-
-        HttpRequest request = mock(HttpRequest.class);
-
-        assertTrue(highlighter.provideMenuItems(contextMenuEventFor(request)).isEmpty());
-    }
-
-    @Test
-    void highlightsAndNamesTrafficFromAContainerListenerWithoutChangingIt() {
+    private static ContainerHighlighter listening(String name, String color) {
         ContainerHighlighter highlighter = new ContainerHighlighter(false);
         highlighter.registry().replace(
-                java.util.Map.of(ListenerAddress.parse("127.0.0.1:18080"),
-                        new ContainerRegistry.Container("firefox-container-1", "Work", "red")),
-                java.util.Map.of());
-
-        Annotations annotations = selfAnnotations();
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        when(interceptedRequest.listenerInterface()).thenReturn("127.0.0.1:18080");
-        HttpHeader host = header("Host", "example.com");
-        when(interceptedRequest.headers()).thenReturn(List.of(host));
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            ProxyRequestReceivedAction action = mock(ProxyRequestReceivedAction.class);
-            receivedActionStatic.when(() -> ProxyRequestReceivedAction.continueWith(interceptedRequest, annotations))
-                                .thenReturn(action);
-
-            assertSame(action, highlighter.handleRequestReceived(interceptedRequest));
-        }
-
-        verify(annotations).withHighlightColor(HighlightColor.RED);
-        // The note is the bare name: the highlight already shows the colour.
-        verify(annotations).withNotes("Work");
-        verify(interceptedRequest, never()).withRemovedHeader(anyString());
-    }
-
-    @Test
-    void leavesTrafficOnTheUsersOwnListenerAlone() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.registry().replace(
-                java.util.Map.of(ListenerAddress.parse("127.0.0.1:18080"),
-                        new ContainerRegistry.Container("firefox-container-1", "Work", "red")),
-                java.util.Map.of());
-
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        when(interceptedRequest.listenerInterface()).thenReturn("127.0.0.1:8080");
-        HttpHeader host = header("Host", "example.com");
-        when(interceptedRequest.headers()).thenReturn(List.of(host));
-
-        try (MockedStatic<ProxyRequestReceivedAction> receivedActionStatic = mockStatic(ProxyRequestReceivedAction.class)) {
-            highlighter.handleRequestReceived(interceptedRequest);
-            receivedActionStatic.verify(() -> ProxyRequestReceivedAction.continueWith(interceptedRequest));
-        }
-        verify(interceptedRequest, never()).annotations();
-    }
-
-    @Test
-    void keepsTheUsersNoteOnContainerListenerTraffic() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.registry().replace(
-                java.util.Map.of(ListenerAddress.parse("127.0.0.1:18080"),
-                        new ContainerRegistry.Container("firefox-container-1", "Work", "blue")),
-                java.util.Map.of());
-
-        Annotations annotations = selfAnnotations();
-        when(annotations.hasNotes()).thenReturn(true);
-        InterceptedRequest interceptedRequest = mock(InterceptedRequest.class);
-        when(interceptedRequest.listenerInterface()).thenReturn("127.0.0.1:18080");
-        when(interceptedRequest.headers()).thenReturn(List.of());
-        when(interceptedRequest.annotations()).thenReturn(annotations);
-
-        try (MockedStatic<ProxyRequestReceivedAction> ignored = mockStatic(ProxyRequestReceivedAction.class)) {
-            highlighter.handleRequestReceived(interceptedRequest);
-        }
-
-        verify(annotations).withHighlightColor(HighlightColor.BLUE);
-        verify(annotations, never()).withNotes(anyString());
-    }
-
-    @Test
-    void offersRepeaterForABareNameNoteItWrote() {
-        Repeater repeater = mock(Repeater.class);
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), repeater));
-        highlighter.knownNames().addAll(List.of("Work"));
-
-        HttpRequest request = mock(HttpRequest.class);
-        when(request.headers()).thenReturn(List.of());
-        clickMenuItem(highlighter, contextMenuEventFor(notedRequestResponse(request, "Work")));
-
-        verify(repeater).sendToRepeater(request, "1 Work");
-    }
-
-    @Test
-    void ignoresABareNoteThatIsNotAContainerName() {
-        ContainerHighlighter highlighter = new ContainerHighlighter(false);
-        highlighter.initialize(apiWith(mock(Logging.class), mock(Repeater.class)));
-        highlighter.knownNames().addAll(List.of("Work"));
-
-        HttpRequest request = mock(HttpRequest.class);
-        when(request.headers()).thenReturn(List.of());
-
-        assertTrue(highlighter.provideMenuItems(contextMenuEventFor(notedRequestResponse(request, "my own note"))).isEmpty());
+                Map.of(ListenerAddress.parse("127.0.0.1:18080"),
+                        new ContainerRegistry.Container("firefox-container-1", name, color)),
+                Map.of());
+        return highlighter;
     }
 
     private static HttpHeader header(String name, String value) {
@@ -683,29 +306,13 @@ class ContainerHighlighterTest {
     /** Stubs {@code headers()}, which is the only header source the extension reads. */
     private static void stubHeaders(HttpRequest request, String colorValue, String nameValue) {
         List<HttpHeader> headers = new ArrayList<>();
-
         if (colorValue != null) {
             headers.add(header(COLOR_HEADER, colorValue));
         }
         if (nameValue != null) {
             headers.add(header(NAME_HEADER, nameValue));
         }
-
         when(request.headers()).thenReturn(headers);
-    }
-
-    private static HttpRequest taggedRequest(String colorValue, HttpRequest cleanRequest) {
-        return taggedRequest(colorValue, null, cleanRequest);
-    }
-
-    private static HttpRequest taggedRequest(String colorValue, String nameValue, HttpRequest cleanRequest) {
-        HttpRequest request = mock(HttpRequest.class);
-        stubHeaders(request, colorValue, nameValue);
-        when(request.withRemovedHeader(COLOR_HEADER)).thenReturn(cleanRequest);
-        when(request.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
-        // Stripping chains one header removal off the result of the other.
-        when(cleanRequest.withRemovedHeader(NAME_HEADER)).thenReturn(cleanRequest);
-        return request;
     }
 
     /** An {@link Annotations} mock that returns itself from every builder, so chaining is stable. */
@@ -726,12 +333,6 @@ class ContainerHighlighterTest {
         when(requestResponse.request()).thenReturn(request);
         when(requestResponse.annotations()).thenReturn(annotations);
         return requestResponse;
-    }
-
-    private static ContextMenuEvent contextMenuEventFor(HttpRequest request) {
-        HttpRequestResponse requestResponse = mock(HttpRequestResponse.class);
-        when(requestResponse.request()).thenReturn(request);
-        return contextMenuEventFor(requestResponse);
     }
 
     private static ContextMenuEvent contextMenuEventFor(HttpRequestResponse requestResponse) {

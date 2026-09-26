@@ -12,6 +12,7 @@ import static burp.ListenerConfigTest.USER_8080;
 import static burp.ListenerConfigTest.at;
 import static burp.ListenerConfigTest.export;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -180,6 +181,31 @@ class SyncServiceTest {
             release.countDown();
             syncing.join(5000);
         }
+    }
+
+    @Test
+    void isPairedWhileSyncingAndNotAfterReleaseOrTheLease() {
+        assertFalse(sync.isPaired());
+
+        sync.sync(body("[{\"id\":\"a\",\"name\":\"A\",\"color\":\"red\"}]"));
+        assertTrue(sync.isPaired());
+
+        now.addAndGet(SyncService.LEASE_MS + 1);
+        sync.expireIfIdle();
+        assertFalse(sync.isPaired());
+    }
+
+    @Test
+    void aReleaseLeavesPairedModeAndClosesListenersAtOnce() {
+        sync.sync(body("[{\"id\":\"a\",\"name\":\"A\",\"color\":\"red\"}]"));
+        assertEquals(2, options.entries().size());
+
+        Map<String, Object> released = sync.sync(Json.asObject(Json.parse("{\"protocol\":1,\"release\":true}")));
+
+        assertFalse(sync.isPaired());
+        assertEquals(1, options.entries().size());
+        assertNull(registry.lookup("127.0.0.1:18080"));
+        assertTrue(((Map<?, ?>) released.get("assignments")).isEmpty());
     }
 
     @Test

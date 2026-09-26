@@ -6,6 +6,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,7 +34,12 @@ class ControlServerTest {
             },
             ListenerAddress.parse("127.0.0.1:8079"), System::currentTimeMillis);
 
-    private final ControlServer.Handler handler = new ControlServer.Handler(() -> TOKEN, sync);
+    private final java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong(1_000);
+    private final PairingService pairing = new PairingService(null, TOKEN, now::get);
+    private final ControlServer.Handler handler = new ControlServer.Handler(pairing, sync);
+
+    private static final String EXTENSION = "moz-extension://1b2c3d4e-0000-4000-8000-000000000001";
+    private static final String CLIENT = "client-abcdefghijklmnop";
 
     private static ControlServer.Request request(String method, String path, String body, String... headers) {
         Map<String, String> map = new HashMap<>();
@@ -99,6 +105,79 @@ class ControlServerTest {
     @Test
     void answersUnknownPathsWithNotFound() {
         assertEquals(404, handler.handle(request("GET", "/", "", "authorization", "Bearer " + TOKEN)).status());
+    }
+
+    @Test
+    void saysHelloOnlyToAFirefoxExtension() {
+        ControlServer.Response hello = handler.handle(request("POST", "/v1/hello", "{}",
+                "origin", EXTENSION, "content-type", "application/json"));
+        assertEquals(200, hello.status());
+        assertTrue(hello.body().contains("phoenixbox-highlighter"), hello.body());
+        assertTrue(!hello.body().contains(TOKEN));
+
+        // No Origin (a non-browser client, or a GET) and a web page's Origin are both refused.
+        assertEquals(403, handler.handle(request("POST", "/v1/hello", "{}", "content-type", "application/json")).status());
+        assertEquals(403, handler.handle(request("POST", "/v1/hello", "{}",
+                "origin", "https://evil.example", "content-type", "application/json")).status());
+    }
+
+    @Test
+    void pairsOnlyAfterTheUserAllowsItInBurp() {
+        List<PairingService.Pending> prompts = new java.util.ArrayList<>();
+        pairing.setPrompt(prompts::add);
+        String body = "{\"client\":\"" + CLIENT + "\",\"label\":\"Firefox (PhoenixBox 3.1.0)\"}";
+
+        ControlServer.Response first = pair(body, EXTENSION);
+        assertEquals(202, first.status());
+        assertEquals(1, prompts.size());
+        assertEquals("Firefox (PhoenixBox 3.1.0)", prompts.get(0).label());
+
+        // Asking again while waiting does not prompt again.
+        assertEquals(202, pair(body, EXTENSION).status());
+        assertEquals(1, prompts.size());
+
+        pairing.decide(CLIENT, true);
+        ControlServer.Response approved = pair(body, EXTENSION);
+        assertEquals(200, approved.status());
+        String token = (String) Json.asObject(Json.parse(approved.body())).get("token");
+
+        // The issued token works for the authenticated routes.
+        assertEquals(200, handler.handle(request("GET", "/v1/status", "", "authorization", "Bearer " + token)).status());
+        // The same client ID from another extension gets nothing.
+        assertEquals(403, pair(body, "moz-extension://99999999-0000-4000-8000-000000000009").status());
+    }
+
+    @Test
+    void refusesADeniedClientAndAQueueJumper() {
+        pair("{\"client\":\"" + CLIENT + "\"}", EXTENSION);
+        assertEquals(429, pair("{\"client\":\"other-client-abcdefghij\"}", EXTENSION).status());
+
+        pairing.decide(CLIENT, false);
+        assertEquals(403, pair("{\"client\":\"" + CLIENT + "\"}", EXTENSION).status());
+    }
+
+    @Test
+    void refusesPairingFromWebPagesAndBadBodies() {
+        assertEquals(403, pair("{\"client\":\"" + CLIENT + "\"}", "https://evil.example").status());
+        assertEquals(400, pair("{\"client\":\"short\"}", EXTENSION).status());
+        assertEquals(400, pair("not json", EXTENSION).status());
+    }
+
+    @Test
+    void revokedTokensStopWorking() {
+        pair("{\"client\":\"" + CLIENT + "\"}", EXTENSION);
+        pairing.decide(CLIENT, true);
+        String token = (String) Json.asObject(Json.parse(pair("{\"client\":\"" + CLIENT + "\"}", EXTENSION).body())).get("token");
+
+        pairing.revoke(CLIENT);
+        assertEquals(401, handler.handle(request("GET", "/v1/status", "", "authorization", "Bearer " + token)).status());
+
+        pairing.revokeAll("a-brand-new-manual-token");
+        assertEquals(401, handler.handle(request("GET", "/v1/status", "", "authorization", "Bearer " + TOKEN)).status());
+    }
+
+    private ControlServer.Response pair(String body, String origin) {
+        return handler.handle(request("POST", "/v1/pair", body, "origin", origin, "content-type", "application/json"));
     }
 
     @Test
