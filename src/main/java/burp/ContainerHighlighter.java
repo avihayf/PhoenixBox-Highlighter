@@ -273,7 +273,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
                         api.logging().logToError("PhoenixBox Highlighter: releasing after a revoke failed: " + e);
                     }
                 }),
-                sync, pairing, api.userInterface().swingUtils().suiteFrame());
+                sync, pairing);
         pairing.setPrompt(panel::promptForPairing);
         api.userInterface().applyThemeToComponent(panel);
         api.userInterface().registerSuiteTab("PhoenixBox", panel);

@@ -35,7 +35,7 @@ A Burp Suite extension that colours proxy history by [PhoenixBox](https://github
 
 Pairing is automatic, with one click in Burp:
 1. PhoenixBox looks for this extension on its Burp proxy's host (`POST /v1/hello`) and asks to pair (`POST /v1/pair`).
-2. Burp shows **"PhoenixBox … wants to pair: Allow / Deny"**, and the request also appears at the top of the **PhoenixBox** tab.
+2. The request appears at the top of Burp's **PhoenixBox** tab, with **Allow / Deny**, the requesting extension's `moz-extension://` origin and its client ID.
 3. Allowing gives that PhoenixBox profile its own token.
 
 The tab lists paired profiles with **Revoke**. **Revoke all** also replaces the manual pairing string, `phx1:<host>:<port>:<token>`, which is the fallback when PhoenixBox can't find Burp.

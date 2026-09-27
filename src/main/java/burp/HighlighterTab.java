@@ -4,7 +4,6 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
-import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -15,7 +14,6 @@ import javax.swing.Timer;
 import javax.swing.table.AbstractTableModel;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
-import java.awt.Frame;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.util.List;
@@ -42,22 +40,19 @@ final class HighlighterTab extends JPanel {
     private final Supplier<String> controlStatus;
     private final SyncService sync;
     private final PairingService pairing;
-    private final Frame owner;
     private final Timer timer;
-    private JDialog promptDialog;
 
     /**
      * @param revokeAll unpairs everyone and replaces the manual pairing string.
      * @param afterRevoke run after any revocation; must hand its work off this (UI) thread.
      */
     HighlighterTab(Supplier<String> pairingString, Supplier<String> controlStatus, Runnable revokeAll,
-                   Runnable afterRevoke, SyncService sync, PairingService pairing, Frame owner) {
+                   Runnable afterRevoke, SyncService sync, PairingService pairing) {
         super(new BorderLayout(0, 8));
         this.pairingString = pairingString;
         this.controlStatus = controlStatus;
         this.sync = sync;
         this.pairing = pairing;
-        this.owner = owner;
         setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
         JPanel top = new JPanel();
@@ -134,39 +129,14 @@ final class HighlighterTab extends JPanel {
 
     void stop() {
         timer.stop();
-        closePrompt();
     }
 
     /**
-     * Asks the user about a PhoenixBox that wants to pair. Called from the control server's thread,
-     * which must not wait, so the dialog is only scheduled; it is non-modal, so Burp stays usable.
+     * A PhoenixBox wants to pair: show the Allow / Deny banner at the top of this tab. Called from
+     * the control server's thread, which must not wait, so the refresh is only scheduled.
      */
     void promptForPairing(PairingService.Pending request) {
-        SwingUtilities.invokeLater(() -> {
-            refresh();
-            closePrompt();
-
-            JDialog dialog = new JDialog(owner, "PhoenixBox wants to pair", false);
-            JPanel body = new JPanel(new BorderLayout(0, 10));
-            body.setBorder(BorderFactory.createEmptyBorder(14, 16, 14, 16));
-            body.add(new JLabel("<html><b>" + escape(request.label()) + "</b> wants to pair with this Burp.<br>"
-                    + "It will be able to open proxy listeners for the containers you mark.<br>"
-                    + "<small>" + escape(request.origin()) + " · client " + escape(shortId(request.id()))
-                    + "</small></html>"), BorderLayout.CENTER);
-            JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
-            JButton deny = new JButton("Deny");
-            JButton allow = new JButton("Allow");
-            deny.addActionListener(e -> answer(false));
-            allow.addActionListener(e -> answer(true));
-            buttons.add(deny);
-            buttons.add(allow);
-            body.add(buttons, BorderLayout.SOUTH);
-            dialog.setContentPane(body);
-            dialog.pack();
-            dialog.setLocationRelativeTo(owner);
-            dialog.setVisible(true);
-            promptDialog = dialog;
-        });
+        SwingUtilities.invokeLater(this::refresh);
     }
 
     private void answer(boolean allow) {
@@ -174,15 +144,7 @@ final class HighlighterTab extends JPanel {
         if (request != null) {
             pairing.decide(request.id(), allow);
         }
-        closePrompt();
         refresh();
-    }
-
-    private void closePrompt() {
-        if (promptDialog != null) {
-            promptDialog.dispose();
-            promptDialog = null;
-        }
     }
 
     private void refresh() {
@@ -201,9 +163,9 @@ final class HighlighterTab extends JPanel {
         PairingService.Pending request = pairing.pending();
         if (request == null) {
             requestBanner.setVisible(false);
-            closePrompt();
         } else {
-            requestLabel.setText("Pairing request from " + request.label() + " (client " + shortId(request.id()) + "):");
+            requestLabel.setText("Pairing request from " + request.label() + " (" + request.origin()
+                    + ", client " + shortId(request.id()) + "). It will be able to open proxy listeners:");
             requestBanner.setVisible(true);
         }
 
@@ -214,11 +176,6 @@ final class HighlighterTab extends JPanel {
 
     private static String shortId(String id) {
         return id.length() <= 8 ? id : "…" + id.substring(id.length() - 6);
-    }
-
-    /** The label and origin come from the network; keep them out of the HTML they are shown in. */
-    private static String escape(String text) {
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private static JPanel left(java.awt.Component component) {
