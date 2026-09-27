@@ -35,7 +35,8 @@ final class HighlighterTab extends JPanel {
     private final JLabel requestLabel = new JLabel();
     private final JTextField pairingField = new JTextField();
     private final RowsModel rowsModel = new RowsModel();
-    private final ClientsModel clientsModel = new ClientsModel();
+    private final JLabel pairedLabel = new JLabel();
+    private final JButton unpairButton = new JButton("Unpair");
     private final Supplier<String> pairingString;
     private final Supplier<String> controlStatus;
     private final SyncService sync;
@@ -43,8 +44,8 @@ final class HighlighterTab extends JPanel {
     private final Timer timer;
 
     /**
-     * @param revokeAll unpairs everyone and replaces the manual pairing string.
-     * @param afterRevoke run after any revocation; must hand its work off this (UI) thread.
+     * @param revokeAll unpairs PhoenixBox and replaces the manual pairing string.
+     * @param afterRevoke run after unpairing; must hand its work off this (UI) thread.
      */
     HighlighterTab(Supplier<String> pairingString, Supplier<String> controlStatus, Runnable revokeAll,
                    Runnable afterRevoke, SyncService sync, PairingService pairing) {
@@ -77,32 +78,16 @@ final class HighlighterTab extends JPanel {
         top.add(left(requestBanner));
 
         top.add(Box.createVerticalStrut(8));
-        top.add(left(new JLabel("Paired PhoenixBox profiles:")));
-        JTable clients = new JTable(clientsModel);
-        clients.setFillsViewportHeight(true);
-        JScrollPane clientsPane = new JScrollPane(clients);
-        clientsPane.setPreferredSize(new java.awt.Dimension(640, 90));
-        JButton revoke = new JButton("Revoke selected");
-        revoke.addActionListener(e -> {
-            int row = clients.getSelectedRow();
-            if (row >= 0) {
-                pairing.revoke(clientsModel.idAt(row));
-                afterRevoke.run();
-                refresh();
-            }
-        });
-        JButton revokeAllButton = new JButton("Revoke all");
-        revokeAllButton.setToolTipText("Unpairs every PhoenixBox and replaces the manual pairing string.");
-        revokeAllButton.addActionListener(e -> {
+        unpairButton.setToolTipText("Unpairs PhoenixBox and replaces the manual pairing string.");
+        unpairButton.addActionListener(e -> {
             revokeAll.run();
             afterRevoke.run();
             refresh();
         });
-        top.add(left(clientsPane));
-        JPanel clientButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        clientButtons.add(revoke);
-        clientButtons.add(revokeAllButton);
-        top.add(left(clientButtons));
+        JPanel pairedRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        pairedRow.add(pairedLabel);
+        pairedRow.add(unpairButton);
+        top.add(left(pairedRow));
 
         top.add(Box.createVerticalStrut(8));
         top.add(left(new JLabel("Manual pairing, only if PhoenixBox cannot find Burp. Treat it like a password.")));
@@ -164,13 +149,19 @@ final class HighlighterTab extends JPanel {
         if (request == null) {
             requestBanner.setVisible(false);
         } else {
+            PairingService.Client replaced = pairing.current();
             requestLabel.setText("Pairing request from " + request.label() + " (" + request.origin()
-                    + ", client " + shortId(request.id()) + "). It will be able to open proxy listeners:");
+                    + ", client " + shortId(request.id()) + "). It will be able to open proxy listeners."
+                    + (replaced == null ? "" : " Allowing replaces the current pairing with " + replaced.label() + "."));
             requestBanner.setVisible(true);
         }
 
         pairingField.setText(pairingString.get());
-        clientsModel.setClients(pairing.clients());
+        PairingService.Client current = pairing.current();
+        pairedLabel.setText(current == null
+                ? "Not paired with PhoenixBox."
+                : "Paired with " + current.label() + " (" + current.origin() + ", client " + shortId(current.id()) + ")");
+        unpairButton.setVisible(current != null);
         rowsModel.setRows(sync.rows());
     }
 
@@ -182,48 +173,6 @@ final class HighlighterTab extends JPanel {
         JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         row.add(component);
         return row;
-    }
-
-    private static final class ClientsModel extends AbstractTableModel {
-
-        private static final String[] COLUMNS = {"PhoenixBox", "Extension", "Client"};
-        private List<PairingService.Client> clients = List.of();
-
-        void setClients(List<PairingService.Client> next) {
-            if (!next.equals(clients)) {
-                clients = next;
-                fireTableDataChanged();
-            }
-        }
-
-        String idAt(int row) {
-            return clients.get(row).id();
-        }
-
-        @Override
-        public int getRowCount() {
-            return clients.size();
-        }
-
-        @Override
-        public int getColumnCount() {
-            return COLUMNS.length;
-        }
-
-        @Override
-        public String getColumnName(int column) {
-            return COLUMNS[column];
-        }
-
-        @Override
-        public Object getValueAt(int rowIndex, int columnIndex) {
-            PairingService.Client client = clients.get(rowIndex);
-            switch (columnIndex) {
-                case 0: return client.label();
-                case 1: return client.origin();
-                default: return shortId(client.id());
-            }
-        }
     }
 
     private static final class RowsModel extends AbstractTableModel {

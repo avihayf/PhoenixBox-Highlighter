@@ -36,9 +36,9 @@ A Burp Suite extension that colours proxy history by [PhoenixBox](https://github
 Pairing is automatic, with one click in Burp:
 1. PhoenixBox looks for this extension on its Burp proxy's host (`POST /v1/hello`) and asks to pair (`POST /v1/pair`).
 2. The request appears at the top of Burp's **PhoenixBox** tab, with **Allow / Deny**, the requesting extension's `moz-extension://` origin and its client ID.
-3. Allowing gives that PhoenixBox profile its own token.
+3. Allowing gives that PhoenixBox its own token.
 
-The tab lists paired profiles with **Revoke**. **Revoke all** also replaces the manual pairing string, `phx1:<host>:<port>:<token>`, which is the fallback when PhoenixBox can't find Burp.
+One PhoenixBox is paired at a time. Each sends its full list of marked containers, so two would overwrite each other's listeners. Allowing a new one, such as a new Firefox profile, replaces the old pairing, and its token stops working. The tab shows who is paired, with **Unpair**, which also replaces the manual pairing string, `phx1:<host>:<port>:<token>`. That string is the fallback when PhoenixBox can't find Burp.
 
 The Allow click is the security gate. Without it, another Firefox extension or a local program could make Burp open listeners. The control server listens where Burp's first proxy listener does (loopback, a specific IP, or all interfaces), on port 8079, or the next port up to 8099 if 8079 is taken.
 - Discovery and pairing need a Firefox extension's `Origin` (`moz-extension://…`), which web pages can't send.

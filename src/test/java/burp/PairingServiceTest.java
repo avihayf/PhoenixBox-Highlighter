@@ -76,6 +76,39 @@ class PairingServiceTest {
     }
 
     @Test
+    void approvingANewPhoenixBoxReplacesTheOldPairing() {
+        PairingService pairing = new PairingService(null, "manual", now::get);
+        pairing.request(CLIENT, "Old profile", ORIGIN);
+        pairing.decide(CLIENT, true);
+        String oldToken = pairing.request(CLIENT, "Old profile", ORIGIN).token();
+
+        String other = "new-profile-abcdefghijkl";
+        String otherOrigin = "moz-extension://99999999-0000-4000-8000-000000000009";
+        pairing.request(other, "New profile", otherOrigin);
+        pairing.decide(other, true);
+
+        assertEquals(1, pairing.clients().size());
+        assertEquals("New profile", pairing.current().label());
+        assertFalse(pairing.isAuthorized("Bearer " + oldToken));
+        assertTrue(pairing.isAuthorized("Bearer " + pairing.request(other, "New profile", otherOrigin).token()));
+    }
+
+    @Test
+    void keepsOnlyTheMostRecentPairingStoredByAnOlderBuild() {
+        MemoryStore store = new MemoryStore();
+        store.json = "[{\"id\":\"first-client-abcdefghij\",\"label\":\"First\",\"origin\":\"" + ORIGIN
+                + "\",\"token\":\"token-one-abcdefghijklmnop\"},"
+                + "{\"id\":\"second-client-abcdefghi\",\"label\":\"Second\",\"origin\":\"" + ORIGIN
+                + "\",\"token\":\"token-two-abcdefghijklmnop\"}]";
+
+        PairingService pairing = new PairingService(store, "manual", now::get);
+
+        assertEquals("Second", pairing.current().label());
+        assertFalse(pairing.isAuthorized("Bearer token-one-abcdefghijklmnop"));
+        assertTrue(pairing.isAuthorized("Bearer token-two-abcdefghijklmnop"));
+    }
+
+    @Test
     void ignoresAnAnswerAboutARequestThatIsNoLongerWaiting() {
         PairingService pairing = new PairingService(null, "manual", now::get);
         pairing.decide(CLIENT, true);

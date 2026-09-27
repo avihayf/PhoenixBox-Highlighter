@@ -17,9 +17,10 @@ import java.util.regex.Pattern;
  * with Allow or Deny. That click is the security gate. Without it any other Firefox extension, or
  * any local program, could pair and make Burp open listeners wherever it liked.
  *
- * <p>Each approved PhoenixBox (one per Firefox profile, told apart by a random client ID it keeps)
- * gets its own token, so one can be revoked without the others. The manual pairing string's token
- * stays valid too, for when discovery cannot find Burp.
+ * <p>One PhoenixBox is paired at a time: each sends its full list of marked containers, so two
+ * would keep overwriting each other's listeners. Approving a new one (say, a new Firefox profile)
+ * replaces the old pairing, whose token then stops working. The manual pairing string's token stays
+ * valid too, for when discovery cannot find Burp.
  *
  * <p>Read by Burp's UI thread, so everything that thread reads is a volatile snapshot, never a
  * value behind this object's lock.
@@ -137,7 +138,8 @@ final class PairingService {
             return;
         }
 
-        Map<String, Client> next = new LinkedHashMap<>(clients);
+        // Replaces any earlier pairing: its token stops working at once.
+        Map<String, Client> next = new LinkedHashMap<>();
         next.put(id, new Client(id, current.label(), current.origin(), Pairing.newToken()));
         clients = java.util.Collections.unmodifiableMap(next);
         persist();
@@ -188,6 +190,11 @@ final class PairingService {
         return List.copyOf(clients.values());
     }
 
+    /** The paired PhoenixBox, or {@code null}. Lock-free, for Burp's UI thread. */
+    Client current() {
+        return clients.values().stream().findFirst().orElse(null);
+    }
+
     String manualToken() {
         return manualToken;
     }
@@ -236,7 +243,11 @@ final class PairingService {
                     }
                 }
             }
-            clients = java.util.Collections.unmodifiableMap(loaded);
+            // Builds before one-pairing-at-a-time could store several: keep the most recent.
+            Map<String, Client> latest = new LinkedHashMap<>();
+            loaded.values().stream().reduce((first, second) -> second)
+                    .ifPresent(client -> latest.put(client.id(), client));
+            clients = java.util.Collections.unmodifiableMap(latest);
         } catch (IllegalArgumentException ignored) {
             // A corrupt record pairs nobody; PhoenixBox simply asks again.
         }
