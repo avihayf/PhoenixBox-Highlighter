@@ -21,11 +21,12 @@ A Burp Suite extension that colours proxy history by [PhoenixBox](https://github
    Target Server   (receives the request unchanged)
 ```
 
-- PhoenixBox sends the **full list** of marked containers whenever it changes and every 30 seconds.
+- PhoenixBox sends the **full list** of marked containers whenever it changes and every 10 seconds.
   The extension reconciles its listeners to that list, so nothing drifts after a missed message or
   a restart on either side.
-- With no update for **120 seconds** (Firefox closed), the extension closes its listeners. They come
-  back on the next update.
+- Closing Firefox's last window closes the container listeners at once, leaving only your own. If
+  Firefox quits or crashes without saying so, they close after **30 seconds** without an update. They
+  come back when Firefox does.
 - Listeners are Burp **project** settings. The extension only adds and removes listeners it created,
   remembers them with the project, removes leftovers after a crash, and removes all of them when it
   is unloaded. Changing listeners makes Burp restart all of them, yours included, so it only does
@@ -89,7 +90,7 @@ While no PhoenixBox is paired, PhoenixBox marks containers with an `x-mac-contai
 - The request is coloured, with no note.
 - `x-mac-container-*` headers are stripped at the Proxy receive stage, and again for every tool before a request is sent, so they don't reach a target.
 
-**While paired**, PhoenixBox sends no header, so this extension neither reads nor strips them. It is in paired mode while a paired PhoenixBox has synced within the last two minutes and hasn't unpaired. Unpairing, revoking a pairing, or two minutes of silence switch it back at once.
+**While paired**, PhoenixBox sends no header, so this extension neither reads nor strips them. It is in paired mode while a paired PhoenixBox has synced within the last 30 seconds and hasn't unpaired. Unpairing, revoking the pairing, closing Firefox's last window, or 30 seconds of silence switch it back.
 
 ## Sending to Repeater
 

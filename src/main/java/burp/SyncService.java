@@ -20,8 +20,11 @@ final class SyncService {
 
     static final int PROTOCOL = 1;
 
-    /** With no sync for this long, PhoenixBox is assumed gone and our listeners are closed. */
-    static final long LEASE_MS = 120_000;
+    /**
+     * With no sync for this long, PhoenixBox is assumed gone (Firefox quit or crashed) and our
+     * listeners are closed. PhoenixBox syncs every 10 s, so this tolerates two missed beats.
+     */
+    static final long LEASE_MS = 30_000;
 
     /** A sanity bound on one request, not a limit on how many containers a user may mark. */
     static final int MAX_CONTAINERS = 1000;

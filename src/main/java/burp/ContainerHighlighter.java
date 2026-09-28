@@ -251,7 +251,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
             } catch (RuntimeException e) {
                 api.logging().logToError("PhoenixBox Highlighter: closing idle listeners failed: " + e);
             }
-        }, 10, 10, TimeUnit.SECONDS);
+        }, 5, 5, TimeUnit.SECONDS);
         leaseTimer = timer;
 
         HighlighterTab panel = new HighlighterTab(
