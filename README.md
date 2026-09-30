@@ -2,14 +2,14 @@
 
 A Burp Suite extension that colours proxy history by [PhoenixBox](https://github.com/avihayf/PhoenixBox) container, and notes which container each request came from. It works in two modes:
 
-- **Paired with PhoenixBox (automatic, one click in Burp):** each container you mark in PhoenixBox gets its own Burp proxy listener, opened by this extension. The extension recognises the container by the listener a request arrives on (`listenerInterface()`). Requests carry no extra header, and are forwarded exactly as the browser sent them.
+- **Paired with PhoenixBox (automatic, one click in Burp):** each container with an open tab in PhoenixBox (while its Highlighter switch is on) gets its own Burp proxy listener, opened by this extension. The extension recognises the container by the listener a request arrives on (`listenerInterface()`). Requests carry no extra header, and are forwarded exactly as the browser sent them.
 - **Not paired:** PhoenixBox marks a container's requests with an `x-mac-container-color` header, as it does for the old v1.x Highlighter. The extension colours the request from it and strips the header before it goes anywhere.
 
 ## How It Works
 
 ```
    Firefox + PhoenixBox
-        │  1. marked containers ──────────────▶  control server (127.0.0.1:8079, token)
+        │  1. open containers ────────────────▶  control server (127.0.0.1:8079, token)
         │                                         opens a listener per container,
         │  ◀── Work → 127.0.0.1:18081 ────────── e.g. Work → 127.0.0.1:18081
         │
@@ -21,10 +21,11 @@ A Burp Suite extension that colours proxy history by [PhoenixBox](https://github
    Target Server   (receives the request unchanged)
 ```
 
-- PhoenixBox sends the **full list** of marked containers whenever it changes and every 10 seconds.
+- PhoenixBox sends the **full list** of open containers whenever it changes and every 10 seconds.
+  A container's listener opens with its first tab and closes 30 seconds after its last one.
   The extension reconciles its listeners to that list, so nothing drifts after a missed message or
   a restart on either side.
-- Closing Firefox's last window closes the container listeners at once, leaving only your own. If
+- Closing Firefox's last window closes the container listeners 30 seconds later, leaving only your own. If
   Firefox quits or crashes without saying so, they close after **30 seconds** without an update. They
   come back when Firefox does.
 - Listeners are Burp **project** settings. The extension only adds and removes listeners it created,
@@ -39,7 +40,7 @@ Pairing is automatic, with one click in Burp:
 2. The request appears at the top of Burp's **PhoenixBox** tab, with **Allow / Deny**, the requesting extension's `moz-extension://` origin and its client ID.
 3. Allowing gives that PhoenixBox its own token.
 
-One PhoenixBox is paired at a time. Each sends its full list of marked containers, so two would overwrite each other's listeners. Allowing a new one, such as a new Firefox profile, replaces the old pairing, and its token stops working. The tab shows who is paired, with **Unpair**, which also replaces the manual pairing string, `phx1:<host>:<port>:<token>`. That string is the fallback when PhoenixBox can't find Burp.
+One PhoenixBox is paired at a time. Each sends its full list of open containers, so two would overwrite each other's listeners. Allowing a new one, such as a new Firefox profile, replaces the old pairing, and its token stops working. The tab shows who is paired, with **Unpair**, which also replaces the manual pairing string, `phx1:<host>:<port>:<token>`. That string is the fallback when PhoenixBox can't find Burp.
 
 The Allow click is the security gate. Without it, another Firefox extension or a local program could make Burp open listeners. The control server listens where Burp's first proxy listener does (loopback, a specific IP, or all interfaces), on port 8079, or the next port up to 8099 if 8079 is taken.
 - Discovery and pairing need a Firefox extension's `Origin` (`moz-extension://…`), which web pages can't send.
@@ -60,7 +61,7 @@ Automatic listeners use the IP of PhoenixBox's **Burp Suite** preset and the fir
   server on `0.0.0.0`, so its port is never quietly taken over; a bind test then confirms the IP
   belongs to this machine. A port whose listener has only just closed counts as free.
 
-A container keeps its address, and gets it back the next time it is marked. In PhoenixBox a container
+A container keeps its address, and gets it back the next time it opens. In PhoenixBox a container
 can be **pinned** to an exact `ip:port`. If you already built a listener there (say, with invisible
 proxying), the extension uses it as-is and never modifies or removes it.
 
@@ -81,7 +82,7 @@ Firefox's *toolbar* colour has no Burp equivalent: those containers are named bu
 
 ## Notes Column
 
-Traffic from a marked container gets the **container name** as its note, e.g. `Work`; the highlight
+Traffic from a highlighted container gets the **container name** as its note, e.g. `Work`; the highlight
 carries the colour. A note you already wrote is never overwritten.
 
 ## Not Paired: the Colour Header
@@ -132,8 +133,8 @@ note or a tab label.
 4. Set **Extension type** to **Java** and select the JAR.
 5. Check the version: the Extensions list shows **PhoenixBox Highlighter v2.0.0**, and Burp has a
    new **PhoenixBox** tab.
-6. In PhoenixBox, select the **Burp Suite** proxy preset and mark containers with the highlighter
-   button. When Burp asks whether to pair PhoenixBox, click **Allow**.
+6. In PhoenixBox, select the **Burp Suite** proxy preset and turn on the **Highlighter** tile.
+   When Burp asks whether to pair PhoenixBox, click **Allow**.
 
 ## Building & Testing
 
