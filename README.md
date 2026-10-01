@@ -22,10 +22,10 @@ A Burp Suite extension that colours proxy history by [PhoenixBox](https://github
 ```
 
 - PhoenixBox sends the **full list** of open containers whenever it changes and every 10 seconds.
-  A container's listener opens with its first tab and closes 30 seconds after its last one.
+  A container's listener opens with its first tab and closes 15 seconds after its last one.
   The extension reconciles its listeners to that list, so nothing drifts after a missed message or
   a restart on either side.
-- Closing Firefox's last window closes the container listeners 30 seconds later, leaving only your own. If
+- Closing Firefox's last window closes the container listeners 15 seconds later, leaving only your own. If
   Firefox quits or crashes without saying so, they close after **30 seconds** without an update. They
   come back when Firefox does.
 - Listeners are Burp **project** settings. The extension only adds and removes listeners it created,
@@ -91,7 +91,7 @@ While no PhoenixBox is paired, PhoenixBox marks containers with an `x-mac-contai
 - The request is coloured, with no note.
 - `x-mac-container-*` headers are stripped at the Proxy receive stage, and again for every tool before a request is sent, so they don't reach a target.
 
-**While paired**, PhoenixBox sends no header, so this extension neither reads nor strips them. It is in paired mode while a paired PhoenixBox has synced within the last 30 seconds and hasn't unpaired. Unpairing, revoking the pairing, closing Firefox's last window, or 30 seconds of silence switch it back.
+**While paired**, PhoenixBox sends no header, so this extension neither reads nor strips them. It is in paired mode while a paired PhoenixBox has synced within the last 30 seconds and hasn't unpaired. Unpairing, revoking the pairing, switching the Highlighter off, or 30 seconds of silence switch it back.
 
 ## Sending to Repeater
 
