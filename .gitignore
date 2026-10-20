@@ -4,3 +4,13 @@ build/
 .vscode/
 *.iml
 .DS_Store
+
+# Eclipse / VS Code Java tooling
+bin/
+.classpath
+.project
+.settings/
+
+# Local agent and editor tooling
+.codex/
+.mcp.json
