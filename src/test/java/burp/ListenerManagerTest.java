@@ -6,12 +6,18 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static burp.ListenerConfigTest.USER_8080;
 import static burp.ListenerConfigTest.at;
 import static burp.ListenerConfigTest.export;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ListenerManagerTest {
 
@@ -61,6 +67,72 @@ class ListenerManagerTest {
     private final FakeOptions options = new FakeOptions(export(USER_8080));
     private final MapStore store = new MapStore();
     private final ListenerManager manager = new ListenerManager(options, store);
+
+    @Test
+    void replacementWaitsForAnAlreadyStartedCleanupImport() throws Exception {
+        CountDownLatch importing = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        CountDownLatch replacing = new CountDownLatch(1);
+        AtomicBoolean gate = new AtomicBoolean();
+        FakeOptions blocked = new FakeOptions(export(USER_8080)) {
+            @Override
+            public void importListeners(String next) {
+                if (gate.compareAndSet(true, false)) {
+                    importing.countDown();
+                    try {
+                        if (!resume.await(3, TimeUnit.SECONDS)) throw new AssertionError("import gate timed out");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(e);
+                    }
+                }
+                super.importListeners(next);
+            }
+        };
+        ListenerManager previous = new ListenerManager(blocked, store);
+        previous.apply(Set.of(at("127.0.0.1:18080")));
+        gate.set(true);
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var cleanup = workers.submit(previous::removeAll);
+            assertTrue(importing.await(3, TimeUnit.SECONDS));
+            var startup = workers.submit(() -> {
+                replacing.countDown();
+                ListenerManager replacement = new ListenerManager(blocked, store);
+                replacement.removeLeftovers();
+                replacement.apply(Set.of(at("127.0.0.1:18080")));
+            });
+            try {
+                assertTrue(replacing.await(3, TimeUnit.SECONDS));
+                assertThrows(TimeoutException.class, () -> startup.get(150, TimeUnit.MILLISECONDS));
+            } finally {
+                resume.countDown();
+            }
+            cleanup.get(3, TimeUnit.SECONDS);
+            startup.get(3, TimeUnit.SECONDS);
+            assertTrue(blocked.has("127.0.0.1:18080"));
+            assertEquals("[\"127.0.0.1:18080\"]", store.get(ListenerManager.OWNED_KEY));
+        } finally {
+            resume.countDown();
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    void anOldInstancesDelayedCleanupCannotRemoveItsReplacementsListeners() {
+        manager.apply(Set.of(at("127.0.0.1:18080")));
+        ListenerManager replacement = new ListenerManager(options, store);
+        replacement.removeLeftovers();
+        replacement.apply(Set.of(at("127.0.0.1:18080")));
+
+        manager.removeAll();
+
+        assertTrue(options.has("127.0.0.1:18080"));
+        assertEquals("[\"127.0.0.1:18080\"]", store.get(ListenerManager.OWNED_KEY));
+        replacement.removeAll();
+        assertEquals(1, options.entries().size());
+        assertTrue(options.has("127.0.0.1:8080"));
+    }
 
     @Test
     void opensAndClosesOnlyItsOwnListeners() {

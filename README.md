@@ -1,6 +1,6 @@
 # PhoenixBox Highlighter
 
-A Burp Suite extension that colours proxy history by [PhoenixBox](https://github.com/avihayf/PhoenixBox) container, and notes which container each request came from. It works in two modes:
+A Burp Suite extension that colours HTTP and WebSocket proxy history by [PhoenixBox](https://github.com/avihayf/PhoenixBox) container, and notes which container each request came from. It works in two modes:
 
 - **Paired with PhoenixBox (automatic, one click in Burp):** each container with an open tab in PhoenixBox (while its Highlighter switch is on) gets its own Burp proxy listener, opened by this extension. The extension recognises the container by the listener a request arrives on (`listenerInterface()`). Requests carry no extra header, and are forwarded exactly as the browser sent them.
 - **Not paired:** PhoenixBox marks a container's requests with an `x-mac-container-color` header, as it does for the old v1.x Highlighter. The extension colours the request from it and strips the header before it goes anywhere.
@@ -42,7 +42,11 @@ Pairing is automatic, with one click in Burp:
 
 One PhoenixBox is paired at a time. Each sends its full list of open containers, so two would overwrite each other's listeners. Allowing a new one, such as a new Firefox profile, replaces the old pairing, and its token stops working. The tab shows who is paired, with **Unpair**, which also replaces the manual pairing string, `phx1:<host>:<port>:<token>`. That string is the fallback when PhoenixBox can't find Burp.
 
-The Allow click is the security gate. Without it, another Firefox extension or a local program could make Burp open listeners. The control server listens where Burp's first proxy listener does (loopback, a specific IP, or all interfaces), on port 8079, or the next port up to 8099 if 8079 is taken.
+The Allow click authorizes automatic pairing. The control server is **loopback-only**, on port 8079, or the next port up to 8099 if 8079 is taken. It keeps the first proxy listener's address only when that address is loopback (including IPv6 `::1`); otherwise it uses `127.0.0.1`. A LAN or all-interfaces proxy listener never exposes the control server to the LAN.
+
+PhoenixBox and Highlighter must run on the **same machine** for direct pairing. If the Burp preset uses a LAN address, automatic discovery on that address cannot reach the loopback control server: copy the manual pairing string from Burp's PhoenixBox tab into PhoenixBox instead. Remote control over plain HTTP is not supported. The proxy listeners carrying test traffic can still use their configured addresses.
+
+Control connections are limited to two workers and 32 queued connections before authentication. Excess connections are closed immediately. Unloading closes active and queued sockets and drops queued work, while an already admitted Burp settings import finishes without interruption.
 - Discovery and pairing need a Firefox extension's `Origin` (`moz-extension://…`), which web pages can't send.
 - Everything else needs a token.
 - CORS preflights are always refused.
@@ -93,6 +97,27 @@ While no PhoenixBox is paired, PhoenixBox marks containers with an `x-mac-contai
 
 **While paired**, PhoenixBox sends no header, so this extension neither reads nor strips them. It is in paired mode while a paired PhoenixBox has synced within the last 30 seconds and hasn't unpaired. Unpairing, revoking the pairing, switching the Highlighter off, or 30 seconds of silence switch it back.
 
+## WebSocket Highlighting
+
+New connections in **Proxy > WebSockets history** inherit the container's color and name from
+their opening HTTP handshake. Both text and binary messages are annotated in both directions,
+for `ws://` and `wss://` traffic passing through Burp. Message contents and interception decisions
+are unchanged, and existing user notes are preserved.
+
+Each connection keeps its original container label if the container is later renamed or its
+listener is reassigned. Toolbar-color containers receive a name without a highlight. In unpaired
+legacy mode, messages inherit only the handshake's PhoenixBox color; attribution headers are
+still stripped before forwarding.
+
+**Reconnect WebSockets after loading or reloading the JAR.** Already-open connections and existing
+history are not backfilled. If a handshake cannot be safely matched, its messages remain unchanged.
+Pending handshakes expire after five minutes, so reconnect after a longer pause in Intercept.
+
+To check a rebuilt JAR in Burp, open a controlled WebSocket echo page from two differently colored
+containers and reconnect both sockets. Send text and binary messages, then confirm that requests
+and echoes have the correct labels in WebSockets history. Check both `ws://` and `wss://`, preserve
+a note written in Intercept, and confirm that an unattributed connection remains uncolored.
+
 ## Sending to Repeater
 
 Right-click a request and choose **Extensions > PhoenixBox Highlighter > Send to Repeater
@@ -131,7 +156,7 @@ note or a tab label.
    or [build from source](#building--testing).
 3. In Burp Suite, go to **Extensions > Installed > Add**.
 4. Set **Extension type** to **Java** and select the JAR.
-5. Check the version: the Extensions list shows **PhoenixBox Highlighter v2.0.0**, and Burp has a
+5. Check the version: the Extensions list shows **PhoenixBox Highlighter v2.1.0**, and Burp has a
    new **PhoenixBox** tab.
 6. In PhoenixBox, select the **Burp Suite** proxy preset and turn on the **Highlighter** tile.
    When Burp asks whether to pair PhoenixBox, click **Allow**.
@@ -157,3 +182,9 @@ Inspired by [PwnFox](https://github.com/yeswehack/PwnFox).
 ## Author
 
 0xR3DB0MB
+
+## Release assets
+
+For v2.1.0, publish the versioned `PhoenixBoxHighlighter-2.1.0.jar` and an identical copy named
+`PhoenixBoxHighlighter.jar`. PhoenixBox’s Download button uses GitHub’s latest-release URL with
+that stable asset name. See [CHANGELOG.md](CHANGELOG.md) for the release notes.

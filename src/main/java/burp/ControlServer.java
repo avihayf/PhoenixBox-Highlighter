@@ -11,11 +11,15 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -178,13 +182,19 @@ final class ControlServer {
 
     private final Handler handler;
     private final Consumer<String> errorLog;
-    private final ExecutorService workers = Executors.newFixedThreadPool(2, runnable -> {
-        Thread thread = new Thread(runnable, "phoenixbox-control");
-        thread.setDaemon(true);
-        return thread;
-    });
+    // Admission and stop share a lock so an accepted socket cannot escape shutdown tracking.
+    private final Object lifecycle = new Object();
+    private final Set<Socket> connections = new HashSet<>();
+    // Enough queue space for Firefox's parallel discovery burst, with a hard bound before auth.
+    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(32), runnable -> {
+                Thread thread = new Thread(runnable, "phoenixbox-control");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private volatile ServerSocket server;
+    private boolean stopped;
 
     ControlServer(Handler handler, Consumer<String> errorLog) {
         this.handler = handler;
@@ -208,6 +218,12 @@ final class ControlServer {
      */
     int start(String bindHost, int firstPort, int lastPort) throws IOException {
         InetAddress bindAddress = InetAddress.getByName(bindHost);
+        if (!bindAddress.isLoopbackAddress()) {
+            throw new IOException("control server requires a loopback address");
+        }
+        synchronized (lifecycle) {
+            if (stopped) throw new IOException("control server has stopped");
+        }
         AddressProbe probe = new AddressProbe.Sockets();
 
         IOException lastFailure = null;
@@ -221,11 +237,14 @@ final class ControlServer {
             try {
                 candidate.setReuseAddress(true);
                 candidate.bind(new InetSocketAddress(bindAddress, port));
-                server = candidate;
-                Thread acceptor = new Thread(this::acceptLoop, "phoenixbox-control-accept");
-                acceptor.setDaemon(true);
-                acceptor.start();
-                return port;
+                synchronized (lifecycle) {
+                    if (stopped) throw new IOException("control server has stopped");
+                    server = candidate;
+                    Thread acceptor = new Thread(() -> acceptLoop(candidate), "phoenixbox-control-accept");
+                    acceptor.setDaemon(true);
+                    acceptor.start();
+                    return port;
+                }
             } catch (IOException e) {
                 candidate.close();
                 lastFailure = e;
@@ -235,32 +254,66 @@ final class ControlServer {
     }
 
     void stop() {
-        ServerSocket current = server;
-        server = null;
-        if (current != null) {
-            try {
-                current.close();
-            } catch (IOException ignored) {
-                // Closing anyway.
+        synchronized (lifecycle) {
+            stopped = true;
+            ServerSocket current = server;
+            server = null;
+            if (current != null) {
+                try {
+                    current.close();
+                } catch (IOException ignored) {
+                    // Closing anyway.
+                }
             }
+            for (Socket socket : connections) close(socket);
+            connections.clear();
+            // Queued sockets are already closed; do not run their requests during unload.
+            workers.getQueue().clear();
+            // Do not interrupt a worker already handing a listener import to Burp's UI thread.
+            // Closing its socket releases network resources; SyncService.stop fences publication,
+            // and the existing serialized cleanup waits for the admitted import to finish.
+            workers.shutdown();
         }
-        workers.shutdownNow();
     }
 
-    private void acceptLoop() {
-        ServerSocket current = server;
-        while (current != null && !current.isClosed()) {
+    private void acceptLoop(ServerSocket current) {
+        while (!current.isClosed()) {
             try {
                 Socket socket = current.accept();
-                workers.submit(() -> serve(socket));
+                synchronized (lifecycle) {
+                    if (stopped) {
+                        close(socket);
+                        return;
+                    }
+                    connections.add(socket);
+                    try {
+                        workers.execute(() -> serve(socket));
+                    } catch (RejectedExecutionException full) {
+                        connections.remove(socket);
+                        close(socket);
+                        // Refuse excess connections immediately, but keep accepting after overload.
+                    } catch (RuntimeException failure) {
+                        connections.remove(socket);
+                        close(socket);
+                        throw failure;
+                    }
+                }
             } catch (SocketException closed) {
                 return;
             } catch (IOException e) {
                 errorLog.accept("PhoenixBox Highlighter: control connection failed: " + e.getMessage());
-            } catch (RuntimeException rejected) {
-                // Executor shut down during unload.
+            } catch (RuntimeException failure) {
+                errorLog.accept("PhoenixBox Highlighter: control admission failed: " + failure);
                 return;
             }
+        }
+    }
+
+    private static void close(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // Closing anyway.
         }
     }
 
@@ -270,6 +323,9 @@ final class ControlServer {
             Response response;
             try {
                 Request request = read(socket.getInputStream());
+                synchronized (lifecycle) {
+                    if (stopped) return;
+                }
                 response = request == null
                         ? new Response(400, "{\"error\":\"malformed request\"}")
                         : handler.handle(request);
@@ -279,7 +335,11 @@ final class ControlServer {
             }
             write(socket.getOutputStream(), response);
         } catch (IOException ignored) {
-            // The client went away.
+            // The client went away, or shutdown closed the socket.
+        } finally {
+            synchronized (lifecycle) {
+                connections.remove(socket);
+            }
         }
     }
 

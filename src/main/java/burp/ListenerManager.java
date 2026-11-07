@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Opens and closes the listeners this extension owns, and only those.
@@ -28,14 +29,33 @@ final class ListenerManager {
     }
 
     static final String OWNED_KEY = "ownedListeners";
+    private static final String OWNER_KEY = "listenerOwner";
+    private static final String COORDINATOR_KEY = "listenerCoordinator";
 
     private final ProjectOptions options;
     private final Store store;
+    private final String owner = UUID.randomUUID().toString();
+    private final Object coordinator;
     private Set<ListenerAddress> owned = new LinkedHashSet<>();
 
     ListenerManager(ProjectOptions options, Store store) {
         this.options = options;
         this.store = store;
+        // Reloaded extensions have different class loaders. A project-specific
+        // interned key provides the same monitor across both generations.
+        synchronized ("phoenixbox.listener-coordinator-init".intern()) {
+            String key = store.get(COORDINATOR_KEY);
+            if (key == null) {
+                key = UUID.randomUUID().toString();
+                store.set(COORDINATOR_KEY, key);
+            }
+            coordinator = ("phoenixbox.listeners:" + key).intern();
+        }
+        // Reload can start before the old instance's queued cleanup finishes.
+        // Only this generation may change the shared listeners and ownership record.
+        synchronized (coordinator) {
+            store.set(OWNER_KEY, owner);
+        }
     }
 
     synchronized Set<ListenerAddress> owned() {
@@ -61,6 +81,13 @@ final class ListenerManager {
      * @return the addresses newly opened by this call.
      */
     synchronized Set<ListenerAddress> apply(Set<ListenerAddress> desired) {
+        synchronized (coordinator) {
+            return applyOwned(desired);
+        }
+    }
+
+    private Set<ListenerAddress> applyOwned(Set<ListenerAddress> desired) {
+        requireOwnership();
         List<ListenerConfig.Entry> configured = ListenerConfig.parse(options.exportListeners());
 
         Set<ListenerAddress> remove = new LinkedHashSet<>();
@@ -84,7 +111,9 @@ final class ListenerManager {
             union.addAll(add);
             persist(union);
 
-            options.importListeners(ListenerConfig.rewrite(options.exportListeners(), remove, add));
+            String next = ListenerConfig.rewrite(options.exportListeners(), remove, add);
+            requireOwnership();
+            options.importListeners(next);
         }
 
         owned = new LinkedHashSet<>(desired);
@@ -94,23 +123,39 @@ final class ListenerManager {
 
     /** Removes listeners a previous run recorded but never closed, e.g. after a crash. */
     synchronized void removeLeftovers() {
-        Set<ListenerAddress> recorded = readPersisted();
-        if (recorded.isEmpty()) {
-            return;
-        }
+        synchronized (coordinator) {
+            requireOwnership();
+            Set<ListenerAddress> recorded = readPersisted();
+            if (recorded.isEmpty()) {
+                return;
+            }
 
-        owned = recorded;
-        apply(Set.of());
+            owned = recorded;
+            applyOwned(Set.of());
+        }
     }
 
     synchronized void removeAll() {
-        apply(Set.of());
+        synchronized (coordinator) {
+            if (!owner.equals(store.get(OWNER_KEY))) {
+                owned = new LinkedHashSet<>();
+                return;
+            }
+            applyOwned(Set.of());
+        }
     }
 
     private void persist(Set<ListenerAddress> addresses) {
+        requireOwnership();
         List<Object> values = new ArrayList<>();
         addresses.forEach(address -> values.add(address.toString()));
         store.set(OWNED_KEY, Json.write(values));
+    }
+
+    private void requireOwnership() {
+        if (!owner.equals(store.get(OWNER_KEY))) {
+            throw new IllegalStateException("listener ownership transferred to another Highlighter instance");
+        }
     }
 
     private Set<ListenerAddress> readPersisted() {

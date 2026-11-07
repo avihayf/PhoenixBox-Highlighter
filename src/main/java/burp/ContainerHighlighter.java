@@ -26,6 +26,7 @@ import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
 
 import javax.swing.JMenuItem;
+import javax.swing.SwingUtilities;
 import java.awt.Component;
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import static java.util.Collections.emptyList;
@@ -112,6 +114,8 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     /** Which container each of our listeners belongs to. Empty until PhoenixBox first syncs. */
     private final ContainerRegistry registry = new ContainerRegistry();
 
+    private final WebSocketHighlighter webSockets = new WebSocketHighlighter();
+
     /** Replaced with the project-backed set once Burp hands us persistence. */
     private volatile KnownNames knownNames = new KnownNames(null);
 
@@ -119,9 +123,16 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
     private volatile BooleanSupplier paired = () -> false;
 
     private volatile ListenerManager listenerManager;
+    private volatile SyncService syncService;
     private volatile ControlServer controlServer;
-    private volatile ScheduledExecutorService leaseTimer;
+    private final Object startupLock = new Object();
+    private final ScheduledExecutorService leaseTimer = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "phoenixbox-lease");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile HighlighterTab tab;
+    private final AtomicBoolean shuttingDown = new AtomicBoolean();
 
     public ContainerHighlighter() {
         this(true);
@@ -151,17 +162,32 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         String title = "PhoenixBox Highlighter v" + VERSION;
         api.extension().setName(title);
         api.proxy().registerRequestHandler(this);
+        api.proxy().registerWebSocketCreationHandler(webSockets);
         api.http().registerHttpHandler(this);
         api.userInterface().registerContextMenuItemsProvider(this);
         api.extension().registerUnloadingHandler(this::shutdown);
 
-        try {
-            if (connectToPhoenixBox) {
-                startListenerService(api);
+        if (connectToPhoenixBox) {
+            Runnable start = () -> {
+                synchronized (startupLock) {
+                    if (shuttingDown.get()) return;
+                    try {
+                        startListenerService(api);
+                    } catch (RuntimeException e) {
+                        // Legacy colouring/stripping still works if pairing cannot start.
+                        api.logging().logToError(title + ": could not start the PhoenixBox connection: " + e);
+                    }
+                }
+            };
+            // A reload may wait for the previous instance's outstanding import.
+            // That import needs Burp's UI, so startup must never wait on the UI.
+            if (SwingUtilities.isEventDispatchThread()) {
+                Thread starter = new Thread(start, "phoenixbox-startup");
+                starter.setDaemon(true);
+                starter.start();
+            } else {
+                start.run();
             }
-        } catch (RuntimeException e) {
-            // Pairing is unavailable, but legacy colouring and stripping keep working.
-            api.logging().logToError(title + ": could not start the PhoenixBox connection: " + e);
         }
 
         api.logging().logToOutput(title + " loaded");
@@ -227,6 +253,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         SyncService sync = new SyncService(manager, registry, knownNames, new AddressProbe.Sockets(),
                 new ListenerAddress(controlHost, ControlServer.DEFAULT_PORT),
                 System::currentTimeMillis);
+        syncService = sync;
         paired = sync::isPaired;
 
         ControlServer server = new ControlServer(new ControlServer.Handler(pairing, sync),
@@ -240,11 +267,8 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
                     + ControlServer.DEFAULT_PORT + " and " + ControlServer.LAST_PORT + " on " + controlHost + ": " + e);
         }
 
-        ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "phoenixbox-lease");
-            thread.setDaemon(true);
-            return thread;
-        });
+        ScheduledExecutorService timer = leaseTimer;
+        if (shuttingDown.get()) return;
         timer.scheduleWithFixedDelay(() -> {
             try {
                 sync.expireIfIdle();
@@ -252,7 +276,6 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
                 api.logging().logToError("PhoenixBox Highlighter: closing idle listeners failed: " + e);
             }
         }, 5, 5, TimeUnit.SECONDS);
-        leaseTimer = timer;
 
         HighlighterTab panel = new HighlighterTab(
                 () -> controlPort < 0
@@ -280,33 +303,60 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         tab = panel;
     }
 
-    /** Closes our listeners before anything else, so an unload never leaves them behind. */
+    /** Stop admission now; release after any in-flight sync, without waiting on Burp's UI thread. */
     private void shutdown() {
-        ScheduledExecutorService timer = leaseTimer;
-        if (timer != null) {
-            timer.shutdownNow();
+        if (!shuttingDown.compareAndSet(false, true)) {
+            return;
         }
-        HighlighterTab panel = tab;
-        if (panel != null) {
-            panel.stop();
+        webSockets.stop();
+        SyncService service = syncService;
+        if (service != null) {
+            service.stop();
         }
-        ListenerManager manager = listenerManager;
-        if (manager != null) {
-            try {
-                manager.removeAll();
-            } catch (RuntimeException e) {
-                Logging log = logging;
-                if (log != null) {
-                    log.logToError("PhoenixBox Highlighter: could not remove container listeners: " + e);
-                }
-            }
-        }
-        registry.clear();
-        paired = () -> false;
         ControlServer server = controlServer;
         if (server != null) {
             server.stop();
         }
+        registry.clear();
+        paired = () -> false;
+        Runnable cleanup = () -> {
+            // Startup can still be waiting for an older generation's import.
+            // Once it exits, close even resources created after shutdown began.
+            synchronized (startupLock) {
+                SyncService active = syncService;
+                if (active != null) active.stop();
+                ControlServer currentServer = controlServer;
+                if (currentServer != null) currentServer.stop();
+                HighlighterTab panel = tab;
+                if (panel != null) panel.stop();
+                try {
+                    // releaseNow holds the sync lock through final cleanup.
+                    if (active != null) {
+                        active.releaseNow();
+                    } else if (listenerManager != null) {
+                        listenerManager.removeAll();
+                    }
+                } catch (RuntimeException e) {
+                    Logging log = logging;
+                    if (log != null) {
+                        log.logToError("PhoenixBox Highlighter: could not remove container listeners: " + e);
+                    }
+                } finally {
+                    registry.clear();
+                    paired = () -> false;
+                }
+            }
+        };
+        leaseTimer.execute(() -> {
+            try {
+                cleanup.run();
+            } finally {
+                // Deregistration may call into Burp; never wait for it on the unloading UI thread.
+                webSockets.close();
+            }
+        });
+        // Execute the final release; cancel periodic lease checks.
+        leaseTimer.shutdown();
     }
 
     private static String readVersion() {
@@ -411,6 +461,8 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         ContainerRegistry.Container container = registry.lookup(interceptedRequest.listenerInterface());
 
         if (container != null) {
+            webSockets.rememberUpgrade(interceptedRequest,
+                    container.color() == null ? null : COLOR_MAP.get(container.color()), container.name());
             // Arrived on a container's listener: colour it and name it, and forward it exactly as
             // the browser sent it.
             return ProxyRequestReceivedAction.continueWith(interceptedRequest,
@@ -418,9 +470,14 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
         }
 
         if (paired.getAsBoolean()) {
+            webSockets.rememberUpgrade(interceptedRequest, null, null);
             // A paired PhoenixBox sends no headers, so there is nothing to read or strip.
             return ProxyRequestReceivedAction.continueWith(interceptedRequest);
         }
+
+        String legacyColor = containerColorValue(interceptedRequest);
+        webSockets.rememberUpgrade(interceptedRequest,
+                legacyColor == null ? null : COLOR_MAP.get(legacyColor), null);
 
         // Legacy: colour from the header, then strip it so it never appears in history, in the
         // Intercept editor, or on the wire.
@@ -439,6 +496,7 @@ public class ContainerHighlighter implements BurpExtension, ProxyRequestHandler,
      */
     @Override
     public ProxyRequestToBeSentAction handleRequestToBeSent(InterceptedRequest interceptedRequest) {
+        webSockets.observeUpgradeToBeSent(interceptedRequest);
         if (paired.getAsBoolean()) {
             return ProxyRequestToBeSentAction.continueWith(interceptedRequest);
         }

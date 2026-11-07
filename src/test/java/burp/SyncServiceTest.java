@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static burp.ListenerConfigTest.USER_8080;
 import static burp.ListenerConfigTest.at;
+import static burp.ListenerConfigTest.allInterfaces;
 import static burp.ListenerConfigTest.export;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,6 +50,32 @@ class SyncServiceTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> assignment(Map<String, Object> response, String id) {
         return (Map<String, Object>) ((Map<String, Object>) response.get("assignments")).get(id);
+    }
+
+    @Test
+    void aPinCannotClaimAnAliasOfTheMainAllInterfacesListener() {
+        options.json = export(allInterfaces(8080));
+        Map<String, Object> response = sync.sync(body(
+                "[{\"id\":\"a\",\"name\":\"Attacker\",\"pin\":\"127.0.0.2:8080\"}]"));
+
+        assertEquals("error", assignment(response, "a").get("status"));
+        assertNull(registry.lookup("127.0.0.1:8080"));
+        assertEquals(0, options.imports);
+        assertEquals(1, options.entries().size());
+    }
+
+    @Test
+    void twoPinsCannotClaimDifferentIpsOfTheSameAllInterfacesListener() {
+        options.json = export(USER_8080, allInterfaces(9090));
+        Map<String, Object> response = sync.sync(body(
+                "[{\"id\":\"a\",\"name\":\"Admin\",\"pin\":\"127.0.0.1:9090\"},"
+                        + "{\"id\":\"b\",\"name\":\"Attacker\",\"pin\":\"192.168.1.5:9090\"}]"));
+
+        assertEquals("ok", assignment(response, "a").get("status"));
+        assertEquals("error", assignment(response, "b").get("status"));
+        assertEquals("Admin", registry.lookup("127.0.0.1:9090").name());
+        assertEquals("Admin", registry.lookup("192.168.1.5:9090").name());
+        assertEquals(0, options.imports);
     }
 
     @Test

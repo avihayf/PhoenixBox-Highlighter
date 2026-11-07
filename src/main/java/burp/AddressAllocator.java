@@ -106,6 +106,17 @@ final class AddressAllocator {
         // A listener the user built at that address is adopted as-is, whatever its settings.
         for (ListenerConfig.Entry entry : userListeners) {
             if (entry.overlaps(pin)) {
+                // A wildcard listener is one resource even when reached through
+                // several IPs. Its port-wide attribution must have one owner.
+                if (entry.overlaps(preset)) {
+                    return Assignment.failed(pin + " shares the Burp preset's listener and can't be pinned");
+                }
+                if (entry.overlaps(control)) {
+                    return Assignment.failed(pin + " shares the Highlighter's control listener");
+                }
+                if (taken.stream().anyMatch(entry::overlaps)) {
+                    return Assignment.failed(pin + " shares a listener already pinned by another container");
+                }
                 return Assignment.adopt(pin, entry.isAllInterfaces());
             }
         }

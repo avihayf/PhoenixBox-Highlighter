@@ -64,6 +64,7 @@ final class SyncService {
     // thread then waited for the lock, both would hang, and Burp's whole UI with them.
     private volatile List<Row> rows = List.of();
     private volatile long lastSync = -1;
+    private volatile boolean stopped;
 
     SyncService(ListenerManager manager, ContainerRegistry registry, KnownNames knownNames, AddressProbe probe,
                 ListenerAddress control, LongSupplier clock) {
@@ -81,6 +82,7 @@ final class SyncService {
     }
 
     synchronized Map<String, Object> sync(Map<String, Object> body) {
+        requireRunning();
         if (body == null || !(body.get("protocol") instanceof Number)
                 || ((Number) body.get("protocol")).intValue() != PROTOCOL) {
             throw new BadSync("unsupported protocol; this Highlighter speaks protocol " + PROTOCOL);
@@ -110,6 +112,7 @@ final class SyncService {
                 .forEach(a -> ownedWanted.add(a.address()));
 
         Map<String, String> failures = new HashMap<>();
+        requireRunning();
         try {
             Set<ListenerAddress> opened = manager.apply(ownedWanted);
             // Checked every time, not just when newly opened: PhoenixBox only routes to an address
@@ -126,7 +129,19 @@ final class SyncService {
             ownedWanted.forEach(address -> failures.put(address.toString(), reason));
         }
 
+        requireRunning();
         return publish(requests, assignments, failures);
+    }
+
+    /** Non-blocking: the unload callback can run on Burp's UI thread while a sync needs that UI. */
+    void stop() {
+        stopped = true;
+    }
+
+    private void requireRunning() {
+        if (stopped) {
+            throw new BadSync("the Highlighter is shutting down");
+        }
     }
 
     /** Closes everything once PhoenixBox has been silent for the whole lease. */

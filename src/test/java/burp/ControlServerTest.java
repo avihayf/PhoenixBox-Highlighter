@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -211,14 +212,63 @@ class ControlServerTest {
     }
 
     @Test
-    void bindsTheControlServerWhereTheFirstProxyListenerIs() {
+    void keepsControlOnLoopbackWhenProxyListenersAreExposed() {
         assertEquals("127.0.0.1", Pairing.bindHost(ListenerConfig.parse(
                 ListenerConfigTest.export(ListenerConfigTest.USER_8080))));
-        assertEquals("192.168.10.2", Pairing.bindHost(ListenerConfig.parse(
+        assertEquals("127.0.0.1", Pairing.bindHost(ListenerConfig.parse(
                 ListenerConfigTest.export(ListenerConfigTest.specific("192.168.10.2", 8080)))));
-        assertEquals("0.0.0.0", Pairing.bindHost(ListenerConfig.parse(
+        assertEquals("127.0.0.1", Pairing.bindHost(ListenerConfig.parse(
                 ListenerConfigTest.export(ListenerConfigTest.allInterfaces(8080)))));
         assertEquals("127.0.0.1", Pairing.bindHost(ListenerConfig.parse(ListenerConfigTest.export())));
+        assertEquals("::1", Pairing.bindHost(ListenerConfig.parse(
+                ListenerConfigTest.export(ListenerConfigTest.specific("::1", 8080)))));
+    }
+
+    @Test
+    void stoppingDoesNotInterruptAnAdmittedBurpImport() throws Exception {
+        var importing = new java.util.concurrent.CountDownLatch(1);
+        var resume = new java.util.concurrent.CountDownLatch(1);
+        var interrupted = new java.util.concurrent.CompletableFuture<Boolean>();
+        var options = new ListenerManagerTest.FakeOptions(ListenerConfigTest.export(ListenerConfigTest.USER_8080)) {
+            @Override
+            public void importListeners(String next) {
+                importing.countDown();
+                boolean wasInterrupted = false;
+                try {
+                    if (!resume.await(3, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("import timed out");
+                } catch (InterruptedException e) {
+                    wasInterrupted = true;
+                    Thread.currentThread().interrupt();
+                }
+                interrupted.complete(wasInterrupted);
+                super.importListeners(next);
+            }
+        };
+        SyncService service = new SyncService(new ListenerManager(options, new ListenerManagerTest.MapStore()),
+                new ContainerRegistry(), new KnownNames(null), new AddressAllocatorTest.FakeProbe(),
+                ListenerAddress.parse("127.0.0.1:8079"), System::currentTimeMillis);
+        ControlServer server = new ControlServer(new ControlServer.Handler(pairing, service), message -> { });
+        int port;
+        try (var reserve = new java.net.ServerSocket(0)) {
+            port = reserve.getLocalPort();
+        }
+        server.start("127.0.0.1", port, port);
+        try (var client = new java.net.Socket("127.0.0.1", port)) {
+            String raw = "POST /v1/sync HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + TOKEN
+                    + "\r\nContent-Type: application/json\r\nContent-Length: " + SYNC_BODY.length()
+                    + "\r\n\r\n" + SYNC_BODY;
+            client.getOutputStream().write(raw.getBytes(StandardCharsets.UTF_8));
+            client.getOutputStream().flush();
+            assertTrue(importing.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            server.stop();
+            client.setSoTimeout(500);
+            assertConnectionClosed(client);
+            resume.countDown();
+            assertFalse(interrupted.get(3, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            resume.countDown();
+            server.stop();
+        }
     }
 
     @Test
@@ -252,6 +302,125 @@ class ControlServerTest {
             org.junit.jupiter.api.Assertions.assertThrows(IOException.class,
                     () -> server.start("127.0.0.1", port, port));
             server.stop();
+        }
+    }
+
+    @Test
+    void pairsAndSyncsOnLoopbackWhenBurpProxyUsesAllInterfaces() throws Exception {
+        ControlServer server = new ControlServer(handler, message -> { });
+        String host = Pairing.bindHost(ListenerConfig.parse(
+                ListenerConfigTest.export(ListenerConfigTest.allInterfaces(8080))));
+        int port = freePort();
+        try {
+            server.start(host, port, port);
+            String body = "{\"client\":\"" + CLIENT + "\"}";
+            assertTrue(wireRequest(port, "/v1/pair", body, "").startsWith("HTTP/1.1 202"));
+            pairing.decide(CLIENT, true);
+            String approved = wireRequest(port, "/v1/pair", body, "");
+            assertTrue(approved.startsWith("HTTP/1.1 200"), approved);
+            String token = (String) Json.asObject(Json.parse(
+                    approved.substring(approved.indexOf("\r\n\r\n") + 4))).get("token");
+            String synced = wireRequest(port, "/v1/sync", SYNC_BODY, "Authorization: Bearer " + token + "\r\n");
+            assertTrue(synced.startsWith("HTTP/1.1 200"), synced);
+            assertTrue(synced.contains("127.0.0.1:18080"), synced);
+        } finally {
+            server.stop();
+        }
+    }
+
+    private static String wireRequest(int port, String path, String body, String authorization) throws IOException {
+        try (var client = new java.net.Socket("127.0.0.1", port)) {
+            client.setSoTimeout(1_000);
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            String head = "POST " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: " + EXTENSION
+                    + "\r\nContent-Type: application/json\r\nContent-Length: " + bytes.length
+                    + "\r\n" + authorization + "\r\n";
+            client.getOutputStream().write(head.getBytes(StandardCharsets.UTF_8));
+            client.getOutputStream().write(bytes);
+            return new String(client.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void refusesWildcardControlBindings() throws Exception {
+        ControlServer server = new ControlServer(handler, message -> { });
+        int port = freePort();
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(IOException.class,
+                    () -> server.start("0.0.0.0", port, port));
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
+    void boundsUnauthenticatedConnectionsAndRecoversAfterOverload() throws Exception {
+        ControlServer server = new ControlServer(handler, message -> { });
+        int port = freePort();
+        var clients = new java.util.ArrayList<java.net.Socket>();
+        try {
+            server.start("127.0.0.1", port, port);
+            // Silent, unauthenticated callers occupy the workers and queue. Admission must
+            // reject excess connections without waiting for the five-second read timeout.
+            for (int i = 0; i < 64; i++) {
+                clients.add(new java.net.Socket("127.0.0.1", port));
+            }
+            var excess = clients.get(clients.size() - 1);
+            excess.setSoTimeout(500);
+            assertConnectionClosed(excess);
+            for (var client : clients) client.close();
+
+            // Overload must not kill the accept loop: a normal authenticated client can recover.
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            String response = "";
+            while (System.nanoTime() < deadline && !response.startsWith("HTTP/1.1 200")) {
+                try (var client = new java.net.Socket("127.0.0.1", port)) {
+                    client.setSoTimeout(500);
+                    String raw = "GET /v1/status HTTP/1.1\r\nAuthorization: Bearer " + TOKEN + "\r\n\r\n";
+                    client.getOutputStream().write(raw.getBytes(StandardCharsets.UTF_8));
+                    response = new String(client.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                } catch (java.net.SocketException ignored) {
+                    // Previously admitted, now closed sockets are still finishing.
+                }
+            }
+            assertTrue(response.startsWith("HTTP/1.1 200"), response);
+        } finally {
+            for (var client : clients) client.close();
+            server.stop();
+        }
+    }
+
+    @Test
+    void stoppingClosesActiveAndQueuedSocketsImmediately() throws Exception {
+        ControlServer server = new ControlServer(handler, message -> { });
+        int port = freePort();
+        var clients = new java.util.ArrayList<java.net.Socket>();
+        try {
+            server.start("127.0.0.1", port, port);
+            for (int i = 0; i < 6; i++) {
+                var client = new java.net.Socket("127.0.0.1", port);
+                client.setSoTimeout(500);
+                clients.add(client);
+            }
+            server.stop();
+            for (var client : clients) assertConnectionClosed(client);
+        } finally {
+            for (var client : clients) client.close();
+            server.stop();
+        }
+    }
+
+    private static int freePort() throws IOException {
+        try (var socket = new java.net.ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress())) {
+            return socket.getLocalPort();
+        }
+    }
+
+    private static void assertConnectionClosed(java.net.Socket socket) throws IOException {
+        try {
+            assertEquals(-1, socket.getInputStream().read(), "server must close the connection");
+        } catch (java.net.SocketException reset) {
+            // Closing a socket with unread client data may reset it instead of sending EOF.
         }
     }
 

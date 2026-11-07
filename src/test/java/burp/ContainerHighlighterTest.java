@@ -15,6 +15,8 @@ import burp.api.montoya.proxy.Proxy;
 import burp.api.montoya.proxy.http.InterceptedRequest;
 import burp.api.montoya.proxy.http.ProxyRequestReceivedAction;
 import burp.api.montoya.proxy.http.ProxyRequestToBeSentAction;
+import burp.api.montoya.proxy.websocket.ProxyWebSocketCreationHandler;
+import burp.api.montoya.extension.ExtensionUnloadingHandler;
 import burp.api.montoya.repeater.Repeater;
 import burp.api.montoya.ui.UserInterface;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
@@ -34,6 +36,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
@@ -283,6 +286,162 @@ class ContainerHighlighterTest {
         assertTrue(messages.getAllValues().get(0).contains("chartreuse"));
         String truncated = messages.getAllValues().get(1);
         assertTrue(truncated.length() < 300 && truncated.contains("xxx…"), truncated);
+    }
+
+    // ---- WebSocket integration ---------------------------------------------------------------------
+
+    @Test
+    void websocketMessagesKeepFullListenerAttributionAcrossRegistryChanges() {
+        var highlighter = new ContainerHighlighter(false);
+        highlighter.setPairedCheck(() -> true);
+        highlighter.registry().replace(Map.of(
+                ListenerAddress.parse("127.0.0.1:18080"), new ContainerRegistry.Container("one", "Work", "red"),
+                ListenerAddress.parse("127.0.0.2:18080"), new ContainerRegistry.Container("two", "Admin", "blue")), Map.of());
+        var api = apiWith(mock(Logging.class));
+        highlighter.initialize(api);
+        var websocket = webSocketHandler(api);
+        var one = WebSocketHighlighterTest.upgrade(101, "one", "/chat", false);
+        var two = WebSocketHighlighterTest.upgrade(102, "two", "/chat", false);
+        when(one.listenerInterface()).thenReturn("127.0.0.1:18080");
+        when(two.listenerInterface()).thenReturn("127.0.0.2:18080");
+        var oneNotes = selfAnnotations();
+        when(one.annotations()).thenReturn(oneNotes);
+        var twoNotes = selfAnnotations();
+        when(two.annotations()).thenReturn(twoNotes);
+        try (var actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(one);
+            highlighter.handleRequestReceived(two);
+        }
+        highlighter.registry().clear();
+        var first = new WebSocketHighlighterTest.Wire(one);
+        var second = new WebSocketHighlighterTest.Wire(two);
+        websocket.handleWebSocketCreation(first.creation);
+        websocket.handleWebSocketCreation(second.creation);
+        WebSocketHighlighterTest.assertLabel(first, HighlightColor.RED, "Work");
+        WebSocketHighlighterTest.assertLabel(second, HighlightColor.BLUE, "Admin");
+        unload(api);
+    }
+
+    @Test
+    void websocketLegacyColorSurvivesHeaderStrippingAndHandshakeEdits() {
+        var highlighter = new ContainerHighlighter(false);
+        var api = apiWith(mock(Logging.class));
+        highlighter.initialize(api);
+        var websocket = webSocketHandler(api);
+        var received = WebSocketHighlighterTest.upgrade(101, "before", "/chat", false);
+        var headers = new ArrayList<>(received.headers());
+        headers.add(header(COLOR_HEADER, " Blue "));
+        when(received.headers()).thenReturn(headers);
+        var receivedNotes = selfAnnotations();
+        when(received.annotations()).thenReturn(receivedNotes);
+        var clean = mock(HttpRequest.class);
+        when(received.withRemovedHeader(COLOR_HEADER)).thenReturn(clean);
+        try (var actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(received);
+            actions.verify(() -> ProxyRequestReceivedAction.continueWith(clean, received.annotations()));
+        }
+        var sent = WebSocketHighlighterTest.upgrade(101, "after", "/changed", true);
+        try (var actions = mockStatic(ProxyRequestToBeSentAction.class)) {
+            highlighter.handleRequestToBeSent(sent);
+            actions.verify(() -> ProxyRequestToBeSentAction.continueWith(sent));
+        }
+        var wire = new WebSocketHighlighterTest.Wire(sent);
+        websocket.handleWebSocketCreation(wire.creation);
+        WebSocketHighlighterTest.assertLabel(wire, HighlightColor.BLUE, "");
+        unload(api);
+    }
+
+    @Test
+    void websocketUnattributedTrafficCannotBorrowAPairedColorHeader() {
+        var highlighter = new ContainerHighlighter(false);
+        highlighter.setPairedCheck(() -> true);
+        var api = apiWith(mock(Logging.class));
+        highlighter.initialize(api);
+        var websocket = webSocketHandler(api);
+        var request = WebSocketHighlighterTest.upgrade(101, "key", "/chat", false);
+        var headers = new ArrayList<>(request.headers());
+        headers.add(header(COLOR_HEADER, "red"));
+        when(request.headers()).thenReturn(headers);
+        try (var actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
+        }
+        var wire = new WebSocketHighlighterTest.Wire(request);
+        websocket.handleWebSocketCreation(wire.creation);
+        assertNull(wire.handler.get());
+        unload(api);
+    }
+
+    @Test
+    void unloadStopsWebSocketHandlingAndRejectsLateHandshakes() {
+        var highlighter = listening("Work", "red");
+        highlighter.setPairedCheck(() -> true);
+        var api = apiWith(mock(Logging.class));
+        highlighter.initialize(api);
+        var websocket = webSocketHandler(api);
+        var request = WebSocketHighlighterTest.upgrade(101, "key", "/chat", false);
+        when(request.listenerInterface()).thenReturn("127.0.0.1:18080");
+        var requestNotes = selfAnnotations();
+        when(request.annotations()).thenReturn(requestNotes);
+        try (var actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
+        }
+        var wire = new WebSocketHighlighterTest.Wire(request);
+        websocket.handleWebSocketCreation(wire.creation);
+        WebSocketHighlighterTest.assertLabel(wire, HighlightColor.RED, "Work");
+        unload(api);
+        verify(wire.registration, timeout(2000)).deregister();
+        var late = new WebSocketHighlighterTest.Wire(request);
+        websocket.handleWebSocketCreation(late.creation);
+        assertNull(late.handler.get());
+    }
+
+    private static ProxyWebSocketCreationHandler webSocketHandler(MontoyaApi api) {
+        var handler = ArgumentCaptor.forClass(ProxyWebSocketCreationHandler.class);
+        verify(api.proxy()).registerWebSocketCreationHandler(handler.capture());
+        return handler.getValue();
+    }
+
+    @Test
+    void unloadDoesNotWaitForBurpToDeregisterAWebSocketHandler() throws Exception {
+        var highlighter = listening("Work", "red");
+        highlighter.setPairedCheck(() -> true);
+        var api = apiWith(mock(Logging.class));
+        highlighter.initialize(api);
+        var websocket = webSocketHandler(api);
+        var request = WebSocketHighlighterTest.upgrade(101, "key", "/chat", false);
+        when(request.listenerInterface()).thenReturn("127.0.0.1:18080");
+        var notes = selfAnnotations();
+        when(request.annotations()).thenReturn(notes);
+        try (var actions = mockStatic(ProxyRequestReceivedAction.class)) {
+            highlighter.handleRequestReceived(request);
+        }
+        var wire = new WebSocketHighlighterTest.Wire(request);
+        websocket.handleWebSocketCreation(wire.creation);
+        var deregistering = new java.util.concurrent.CountDownLatch(1);
+        var resume = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(call -> {
+            deregistering.countDown();
+            assertTrue(resume.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            return null;
+        }).when(wire.registration).deregister();
+        var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var unloading = worker.submit(() -> unload(api));
+            assertTrue(deregistering.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            unloading.get(1, java.util.concurrent.TimeUnit.SECONDS);
+            var late = new WebSocketHighlighterTest.Wire(request);
+            websocket.handleWebSocketCreation(late.creation);
+            assertNull(late.handler.get());
+        } finally {
+            resume.countDown();
+            worker.shutdownNow();
+        }
+    }
+
+    private static void unload(MontoyaApi api) {
+        var handler = ArgumentCaptor.forClass(ExtensionUnloadingHandler.class);
+        verify(api.extension()).registerUnloadingHandler(handler.capture());
+        handler.getValue().extensionUnloaded();
     }
 
     // ---- Helpers ----------------------------------------------------------------------------------

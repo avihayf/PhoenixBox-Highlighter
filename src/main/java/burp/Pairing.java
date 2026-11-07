@@ -1,5 +1,7 @@
 package burp;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
@@ -8,12 +10,6 @@ import java.util.List;
 final class Pairing {
 
     static final String PREFIX = "phx1";
-
-    /**
-     * Stands in for "whichever IP you reach Burp's proxy on" when the control server listens on all
-     * interfaces and cannot know which one Firefox uses. PhoenixBox substitutes the preset's host.
-     */
-    static final String ANY_HOST = "0.0.0.0";
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -32,19 +28,18 @@ final class Pairing {
     }
 
     /**
-     * Where the control server listens: the same way as the user's first proxy listener, so it is
-     * reachable exactly where Burp's proxy is. Loopback when there is no listener to copy.
+     * Control tokens travel over HTTP, so control traffic must stay on loopback even when
+     * Burp's proxy accepts LAN clients. Keep an existing loopback address for local discovery.
      */
     static String bindHost(List<ListenerConfig.Entry> listeners) {
-        if (listeners.isEmpty()) {
-            return ListenerAddress.LOOPBACK;
+        if (!listeners.isEmpty()) {
+            String host = listeners.get(0).boundHost();
+            try {
+                if (host != null && InetAddress.getByName(host).isLoopbackAddress()) return host;
+            } catch (UnknownHostException ignored) {
+                // A bad proxy address must never broaden the control endpoint's exposure.
+            }
         }
-
-        ListenerConfig.Entry first = listeners.get(0);
-        if (first.isAllInterfaces()) {
-            return ANY_HOST;
-        }
-        String host = first.boundHost();
-        return host == null || host.isEmpty() ? ListenerAddress.LOOPBACK : host;
+        return ListenerAddress.LOOPBACK;
     }
 }
